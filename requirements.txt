@@ -1,2 +1,2 @@
 mutagen>=1.47,<2
-Pillow>=10,<13
+Pillow>=12.3.0,<13
