@@ -42,8 +42,8 @@ def workflow_step(
     if plan is None:
         return "02  Compare"
     fuzzy = any(not match.confirmed for match in plan.matches)
-    conflicts = any(match.metadata_conflict or match.artwork_conflict for match in plan.matches)
-    if fuzzy or (conflicts and not review_choices):
+    conflict_count = sum(match.metadata_conflict or match.artwork_conflict for match in plan.matches)
+    if fuzzy or (conflict_count and len(review_choices or {}) < conflict_count):
         return "03  Review"
     if not preview_ready:
         return "04  Preview"
