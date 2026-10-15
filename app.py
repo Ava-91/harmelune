@@ -430,6 +430,62 @@ class HarmeluneApp(tk.Tk):
             return None
         return decisions
 
+    def _operation_lines(self, operations, limit: int = 12) -> list[str]:
+        lines = []
+        for operation in operations[:limit]:
+            kind = getattr(operation.kind, "value", str(operation.kind)).upper()
+            source = str(operation.source) if operation.source is not None else "(no source)"
+            lines.append(f"{kind}: {source}  →  {operation.destination}")
+        if len(operations) > limit:
+            lines.append(f"… and {len(operations) - limit} more operation(s). See the full preview list.")
+        return lines
+
+    def _show_preview_dialog(self, result, mode: str) -> None:
+        dialog = tk.Toplevel(self)
+        dialog.title("Synchronization plan preview")
+        dialog.geometry("920x650")
+        dialog.minsize(720, 480)
+        dialog.transient(self)
+        self._configure_dialog_theme(dialog)
+        root = ttk.Frame(dialog, padding=16)
+        root.pack(fill="both", expand=True)
+        ttk.Label(root, text="Preview · no files changed", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(root, text=f"Mode: {mode.upper()}  ·  {len(result.operations)} operation(s)  ·  {len(result.skipped)} skipped  ·  {len(result.blocked)} blocked", style="Section.TLabel").pack(anchor="w", pady=(4, 8))
+        if mode == SyncMode.MIRROR:
+            target = "Library B" if self.master_var.get() == "library_a" else "Library A"
+            ttk.Label(root, text=f"MIRROR WARNING: {self.master_var.get()} is the master. {target} is the target and may have files replaced or deleted.", style="Danger.TLabel", wraplength=850).pack(anchor="w", pady=(0, 8))
+        ttk.Label(root, text="Backup status: not created yet. Apply creates and verifies a backup before modifying files.", style="Muted.TLabel", wraplength=850).pack(anchor="w", pady=(0, 8))
+        body = tk.Text(root, wrap="word", background="#171B27", foreground="#DCE1F0", insertbackground="#DCE1F0", relief="flat", padx=10, pady=10)
+        scrollbar = ttk.Scrollbar(root, orient="vertical", command=body.yview)
+        body.configure(yscrollcommand=scrollbar.set)
+        body.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        body.insert("end", "PROPOSED OPERATIONS\n" + ("=" * 70) + "\n")
+        lines = self._operation_lines(result.operations, limit=len(result.operations))
+        body.insert("end", "\n".join(lines) if lines else "No file operations are proposed.")
+        if result.skipped:
+            body.insert("end", "\n\nSKIPPED\n" + ("=" * 70) + "\n" + "\n".join(str(item) for item in result.skipped))
+        if result.blocked:
+            body.insert("end", "\n\nBLOCKED — RESOLVE BEFORE APPLY\n" + ("=" * 70) + "\n" + "\n".join(str(item) for item in result.blocked))
+        body.configure(state="disabled")
+        ttk.Button(root, text="Close preview", command=dialog.destroy, style="Primary.TButton").pack(anchor="e", pady=(10, 0))
+
+    def _configure_dialog_theme(self, dialog: tk.Toplevel) -> None:
+        style = ttk.Style(dialog)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure(".", background="#10131B", foreground="#E7EAF4", font=("Segoe UI", 10))
+        style.configure("TFrame", background="#10131B")
+        style.configure("TLabel", background="#10131B", foreground="#DCE1F0")
+        style.configure("Muted.TLabel", background="#10131B", foreground="#9AA4BB")
+        style.configure("Title.TLabel", background="#10131B", foreground="#F4F5FC", font=("Segoe UI", 18, "bold"))
+        style.configure("Section.TLabel", background="#10131B", foreground="#B7C0FF", font=("Segoe UI", 10, "bold"))
+        style.configure("Danger.TLabel", background="#10131B", foreground="#F49BA6", font=("Segoe UI", 10, "bold"))
+        style.configure("TButton", background="#252B40", foreground="#E7EAF4", padding=(10, 7))
+        style.configure("Primary.TButton", background="#B7C0FF", foreground="#171A29", font=("Segoe UI", 10, "bold"))
+
     def dry_run(self) -> None:
         if not self.plan:
             return
@@ -449,11 +505,7 @@ class HarmeluneApp(tk.Tk):
             self.preview_ready = not bool(result.blocked)
             self._update_controls()
             self._update_workflow()
-            summary = f"Mode: {mode}\nStatus: {result.status}\nPlanned operations: {len(result.operations)}\nSkipped: {len(result.skipped)}\nBlocked: {len(result.blocked)}\n\nBackup: not created yet — a verified backup is required during apply.\nNo library or backup files were modified."
-            if mode == SyncMode.MIRROR:
-                target = "Library B" if self.master_var.get() == "library_a" else "Library A"
-                summary = f"WARNING — MIRROR MODE\nMaster/source: {self.master_var.get()}\nTarget being conformed: {target}\n\n" + summary
-            messagebox.showinfo("Synchronization preview — no files changed", summary, parent=self)
+            self._show_preview_dialog(result, mode)
         except Exception as exc:
             messagebox.showerror("Dry run blocked", str(exc), parent=self)
 
@@ -477,7 +529,8 @@ class HarmeluneApp(tk.Tk):
             messagebox.showerror("Safe mode blocked", str(exc), parent=self)
             return
         preview = self.last_dry_run
-        summary = f"Planned operations: {len(preview.operations) if preview else 'Unknown'}\nBlocked items: {len(preview.blocked) if preview else 'Unknown'}\nBackup: will be created and verified before changes.\n\nSafe mode only adds missing files; it does not delete or overwrite existing destination files.\n\nContinue?"
+        operations = self._operation_lines(preview.operations) if preview else ["Operation list unavailable; rerun Preview."]
+        summary = f"Planned operations: {len(preview.operations) if preview else 'Unknown'}\n" + "\n".join(operations) + f"\n\nBackup: will be created and verified before changes.\n\nSafe mode only adds missing files; it does not delete or overwrite existing destination files.\n\nContinue?"
         if not messagebox.askyesno("Confirm Safe mode", summary, parent=self):
             return
         self._run_worker(lambda: report_from_safe(execute_safe(self.plan, direction, backup)))
@@ -493,7 +546,8 @@ class HarmeluneApp(tk.Tk):
             messagebox.showerror("Reconcile blocked", str(exc), parent=self)
             return
         preview = self.last_dry_run
-        summary = f"Planned operations: {len(preview.operations) if preview else 'Unknown'}\nBackup: will be created and verified before changes.\n\nReconcile applies the explicit decisions you reviewed. Continue?"
+        operations = self._operation_lines(preview.operations) if preview else ["Operation list unavailable; rerun Preview."]
+        summary = f"Planned operations: {len(preview.operations) if preview else 'Unknown'}\n" + "\n".join(operations) + f"\n\nBackup: will be created and verified before changes.\n\nReconcile applies the explicit decisions you reviewed. Continue?"
         if not messagebox.askyesno("Confirm Reconcile", summary, parent=self):
             return
         self._run_worker(lambda: report_from_reconcile(execute_reconcile(self.plan, decisions, backup)))
@@ -509,7 +563,8 @@ class HarmeluneApp(tk.Tk):
             messagebox.showwarning("Mirror blocked", "Resolve all fuzzy matches before Mirror execution.", parent=self)
             return
         target_name = "Library B" if self.master_var.get() == "library_a" else "Library A"
-        warning = (f"MIRROR MODE — DESTRUCTIVE CHANGES POSSIBLE\n\nMaster/source: {self.master_var.get()}\nTarget being conformed: {target_name}\n\nCopies: {len(preview.copies)}\nReplacements: {len(preview.replacements)}\nDeletions: {len(preview.deletions)}\n\nA verified backup will be created before changes. Files in the target that are not in the master may be deleted according to this plan.")
+        operation_lines = self._operation_lines(preview.operations, limit=12)
+        warning = (f"MIRROR MODE — DESTRUCTIVE CHANGES POSSIBLE\n\nMaster/source: {self.master_var.get()}\nTarget being conformed: {target_name}\n\nCopies: {len(preview.copies)}\nReplacements: {len(preview.replacements)}\nDeletions: {len(preview.deletions)}\n\n" + "\n".join(operation_lines) + "\n\nA verified backup will be created before changes. Files in the target that are not in the master may be deleted according to this plan.")
         if not messagebox.askokcancel("Review Mirror changes", warning, icon="warning", parent=self):
             return
         confirmation = simpledialog.askstring("Confirm Mirror", "The target library may be changed or have files deleted.\nType MIRROR exactly to continue:", parent=self)
