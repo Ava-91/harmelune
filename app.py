@@ -53,6 +53,11 @@ class HarmeluneApp(tk.Tk):
         self.workflow_var = tk.StringVar(value="01  Select libraries")
         self.workflow_help_var = tk.StringVar(value="Choose two different, accessible music folders.")
         self._build_ui()
+        self.library_a_var.trace_add("write", lambda *_: self._invalidate_scan())
+        self.library_b_var.trace_add("write", lambda *_: self._invalidate_scan())
+        self.master_var.trace_add("write", lambda *_: self._invalidate_preview())
+        self.mode_var.trace_add("write", lambda *_: self._invalidate_preview())
+        self.backup_var.trace_add("write", lambda *_: self._invalidate_preview())
         self._update_controls()
         if is_first_run(self.settings):
             self.after(100, self._run_first_run)
@@ -146,9 +151,9 @@ class HarmeluneApp(tk.Tk):
         advanced.pack(fill="x", pady=(0, 8))
         self.export_button = ttk.Button(advanced, text="Export last report", command=self.export_report, state="disabled")
         self.export_button.pack(side="left")
-        self.backups_a_button = ttk.Button(advanced, text="Manage backups for A", command=lambda: self.open_backups(self.library_a_var), state="normal" if self.library_a_var.get().strip() else "disabled")
+        self.backups_a_button = ttk.Button(advanced, text="Backups A · Manage", command=lambda: self.open_backups(self.library_a_var), state="normal" if self.library_a_var.get().strip() else "disabled")
         self.backups_a_button.pack(side="left", padx=(7, 0))
-        self.backups_b_button = ttk.Button(advanced, text="Manage backups for B", command=lambda: self.open_backups(self.library_b_var), state="normal" if self.library_b_var.get().strip() else "disabled")
+        self.backups_b_button = ttk.Button(advanced, text="Backups B · Manage", command=lambda: self.open_backups(self.library_b_var), state="normal" if self.library_b_var.get().strip() else "disabled")
         self.backups_b_button.pack(side="left", padx=(7, 0))
         ttk.Button(advanced, text="Clear result filter", command=lambda: self.filter_results("all")).pack(side="right")
         results = ttk.LabelFrame(frame, text="03  RESULTS", padding=8)
@@ -191,6 +196,33 @@ class HarmeluneApp(tk.Tk):
         )
         self.settings_store.save(settings)
         self.settings = settings
+
+    def _invalidate_preview(self) -> None:
+        self.preview_ready = False
+        self.last_dry_run = None
+        if hasattr(self, "execute_button"):
+            self._update_controls()
+
+    def _invalidate_scan(self) -> None:
+        self.plan = None
+        self.scan_a = None
+        self.scan_b = None
+        self.library_a_root = None
+        self.library_b_root = None
+        self.last_report = None
+        self.health = None
+        self.review_choices = {}
+        self.preview_ready = False
+        self.last_dry_run = None
+        self.active_filter = "all"
+        if hasattr(self, "tree"):
+            for item in self.tree.get_children():
+                self.tree.delete(item)
+        if hasattr(self, "summary_buttons"):
+            for button in self.summary_buttons.values():
+                button.configure(state="disabled")
+        if hasattr(self, "execute_button"):
+            self._update_controls()
 
     def _update_backup_buttons(self) -> None:
         self.backups_a_button.configure(state="normal" if self.library_a_var.get().strip() else "disabled")
