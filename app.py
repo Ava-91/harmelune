@@ -250,8 +250,11 @@ class HarmeluneApp(tk.Tk):
         fuzzy = has_plan and any(not match.confirmed for match in self.plan.matches)
         conflicts = has_plan and any(match.metadata_conflict or match.artwork_conflict for match in self.plan.matches)
         backup_ready = bool(self.backup_var.get().strip())
-        mirror_blocked = self.mode_var.get() == SyncMode.MIRROR and bool(fuzzy)
-        can_apply = has_plan and backup_ready and self.preview_ready and not mirror_blocked
+        conflict_count = sum(match.metadata_conflict or match.artwork_conflict for match in self.plan.matches) if has_plan else 0
+        conflict_review_incomplete = conflict_count > len(self.review_choices)
+        mode = self.mode_var.get()
+        mode_blocked = (mode == SyncMode.MIRROR and bool(fuzzy)) or (mode == SyncMode.RECONCILE and (bool(fuzzy) or conflict_review_incomplete))
+        can_apply = has_plan and backup_ready and self.preview_ready and not mode_blocked
         for button, enabled in ((self.review_conflicts_button, conflicts), (self.review_fuzzy_button, fuzzy), (self.dry_run_button, has_plan), (self.execute_button, can_apply), (self.export_button, self.last_report is not None)):
             button.configure(state="normal" if enabled and not busy else "disabled")
         if hasattr(self, "backups_a_button"):
@@ -422,6 +425,8 @@ class HarmeluneApp(tk.Tk):
         for path, choice in self.review_choices.items():
             decisions[f"match:{path}"] = {ConflictChoice.LAPTOP: ReconcileDecision.KEEP_A, ConflictChoice.PHONE: ReconcileDecision.KEEP_B, ConflictChoice.SKIP: ReconcileDecision.SKIP}[choice]
         if any(not m.confirmed and f"match:{m.library_a.path}" not in decisions for m in self.plan.matches):
+            return None
+        if any((m.metadata_conflict or m.artwork_conflict) and f"match:{m.library_a.path}" not in decisions for m in self.plan.matches):
             return None
         return decisions
 
