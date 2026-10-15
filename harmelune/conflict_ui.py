@@ -18,6 +18,18 @@ class ConflictReviewDialog(tk.Toplevel):
         self.title("Review conflicts")
         self.geometry("980x720")
         self.transient(parent)
+        try:
+            ttk.Style(self).theme_use("clam")
+            style = ttk.Style(self)
+            style.configure(".", background="#10131B", foreground="#E7EAF4", font=("Segoe UI", 10))
+            style.configure("TFrame", background="#10131B")
+            style.configure("TLabel", background="#10131B", foreground="#DCE1F0")
+            style.configure("TLabelframe", background="#10131B", foreground="#B7C0FF")
+            style.configure("TLabelframe.Label", background="#10131B", foreground="#B7C0FF")
+            style.configure("TButton", background="#252B40", foreground="#E7EAF4", padding=(10, 7))
+            self.configure(background="#10131B")
+        except tk.TclError:
+            pass
         self.grab_set()
         self.matches = conflict_matches(matches)
         self.index = 0
