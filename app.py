@@ -39,12 +39,18 @@ class HarmeluneApp(tk.Tk):
         self.last_report: ExecutionReport | None = None
         self.review_choices: dict[str, ConflictChoice] = {}
         self.health = None
+        self.active_filter = "all"
+        self.preview_ready = False
+        self.last_dry_run = None
+        self.scan_errors = 0
         self.library_a_var = tk.StringVar(value=self.settings.library_a)
         self.library_b_var = tk.StringVar(value=self.settings.library_b)
         self.master_var = tk.StringVar(value=self.settings.master or "library_a")
         self.mode_var = tk.StringVar(value=self.settings.sync_mode)
         self.backup_var = tk.StringVar(value=self.settings.backup_location)
         self.status_var = tk.StringVar(value="Choose Library A and Library B to begin.")
+        self.workflow_var = tk.StringVar(value="01  Select libraries")
+        self.workflow_help_var = tk.StringVar(value="Choose two different, accessible music folders.")
         self._build_ui()
         self._update_controls()
         if is_first_run(self.settings):
@@ -69,42 +75,89 @@ class HarmeluneApp(tk.Tk):
         self.backup_var.set(self.settings.backup_location)
         self.status_var.set("Setup saved — ready to scan. Nothing has been changed in either library.")
 
+    def _configure_theme(self) -> None:
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        self.configure(background="#10131B")
+        style.configure(".", background="#10131B", foreground="#E7EAF4", font=("Segoe UI", 10))
+        style.configure("TFrame", background="#10131B")
+        style.configure("TLabel", background="#10131B", foreground="#DCE1F0")
+        style.configure("Muted.TLabel", background="#10131B", foreground="#9AA4BB")
+        style.configure("Title.TLabel", background="#10131B", foreground="#F4F5FC", font=("Segoe UI", 22, "bold"))
+        style.configure("Section.TLabel", background="#10131B", foreground="#B7C0FF", font=("Segoe UI", 10, "bold"))
+        style.configure("TButton", background="#252B40", foreground="#E7EAF4", padding=(10, 7), borderwidth=0)
+        style.map("TButton", background=[("active", "#343D59"), ("disabled", "#1A1F2C")], foreground=[("disabled", "#6F7890")])
+        style.configure("Primary.TButton", background="#B7C0FF", foreground="#171A29", font=("Segoe UI", 10, "bold"), padding=(13, 8))
+        style.map("Primary.TButton", background=[("active", "#D0D5FF"), ("disabled", "#373B50")])
+        style.configure("Danger.TButton", background="#6B303E", foreground="#FFF0F2", padding=(10, 7))
+        style.map("Danger.TButton", background=[("active", "#843D4C")])
+        style.configure("TEntry", fieldbackground="#1A1F2C", foreground="#E7EAF4", insertcolor="#E7EAF4", bordercolor="#343B52", padding=6)
+        style.configure("TCombobox", fieldbackground="#1A1F2C", background="#252B40", foreground="#E7EAF4", arrowcolor="#B7C0FF", padding=5)
+        style.map("TCombobox", fieldbackground=[("readonly", "#1A1F2C")], foreground=[("readonly", "#E7EAF4")])
+        style.configure("Treeview", background="#171B27", fieldbackground="#171B27", foreground="#DCE1F0", rowheight=29, borderwidth=0)
+        style.configure("Treeview.Heading", background="#252B40", foreground="#B7C0FF", font=("Segoe UI", 9, "bold"), padding=7)
+        style.map("Treeview", background=[("selected", "#343D59")], foreground=[("selected", "#FFFFFF")])
+        style.configure("TLabelframe", background="#10131B", foreground="#B7C0FF")
+        style.configure("TLabelframe.Label", background="#10131B", foreground="#B7C0FF", font=("Segoe UI", 10, "bold"))
+
     def _build_ui(self) -> None:
-        frame = ttk.Frame(self, padding=20)
+        self._configure_theme()
+        frame = ttk.Frame(self, padding=18)
         frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text="Harmelune", font=("Segoe UI", 20, "bold")).pack(anchor="w")
-        ttk.Label(frame, text="Compare, review, preview, and synchronize two arbitrary music libraries.").pack(anchor="w", pady=(2, 18))
-        self._path_row(frame, "Library A", self.library_a_var)
-        self._path_row(frame, "Library B", self.library_b_var)
+        ttk.Label(frame, text="harmelune", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(frame, text="YOUR MUSIC, IN HARMONY.  ·  LOCAL-FIRST LIBRARY CARE", style="Muted.TLabel").pack(anchor="w", pady=(0, 10))
+        ttk.Label(frame, textvariable=self.workflow_var, style="Section.TLabel").pack(anchor="w", pady=(2, 2))
+        ttk.Label(frame, textvariable=self.workflow_help_var, style="Muted.TLabel").pack(anchor="w", pady=(0, 10))
+        paths = ttk.LabelFrame(frame, text="01  MUSIC LIBRARIES", padding=10)
+        paths.pack(fill="x", pady=(0, 8))
+        self._path_row(paths, "Library A", self.library_a_var)
+        self._path_row(paths, "Library B", self.library_b_var)
         options = ttk.Frame(frame)
-        options.pack(fill="x", pady=8)
+        options.pack(fill="x", pady=(2, 8))
         self._combo_row(options, "Master", self.master_var, ["library_a", "library_b"])
         self._combo_row(options, "Mode", self.mode_var, [SyncMode.SAFE, SyncMode.RECONCILE, SyncMode.MIRROR])
         self._path_row(options, "Backup location", self.backup_var, "Select backup folder")
+        summary = ttk.LabelFrame(frame, text="02  COMPARISON SNAPSHOT  ·  SELECT A CATEGORY TO FILTER", padding=8)
+        summary.pack(fill="x", pady=(0, 8))
+        cards = ttk.Frame(summary)
+        cards.pack(fill="x")
+        self.summary_buttons = {}
+        for key, label in (("exact", "Exact matches"), ("a_only", "Only in A"), ("b_only", "Only in B"), ("fuzzy", "Review fuzzy"), ("conflicts", "Conflicts")):
+            button = ttk.Button(cards, text=f"{label}\n—", command=lambda category=key: self.filter_results(category))
+            button.pack(side="left", fill="x", expand=True, padx=3)
+            self.summary_buttons[key] = button
         actions = ttk.Frame(frame)
-        actions.pack(fill="x", pady=16)
-        self.scan_button = ttk.Button(actions, text="Scan", command=self.scan)
+        actions.pack(fill="x", pady=(0, 8))
+        self.scan_button = ttk.Button(actions, text="Compare libraries", command=self.scan, style="Primary.TButton")
         self.scan_button.pack(side="left")
         self.review_conflicts_button = ttk.Button(actions, text="Review conflicts", command=self.review_conflicts, state="disabled")
-        self.review_conflicts_button.pack(side="left", padx=8)
-        self.review_fuzzy_button = ttk.Button(actions, text="Review fuzzy", command=self.review_fuzzy, state="disabled")
-        self.review_fuzzy_button.pack(side="left")
-        self.dry_run_button = ttk.Button(actions, text="Dry run", command=self.dry_run, state="disabled")
-        self.dry_run_button.pack(side="left", padx=8)
-        self.execute_button = ttk.Button(actions, text="Apply", command=self.execute, state="disabled")
-        self.execute_button.pack(side="left")
-        self.export_button = ttk.Button(actions, text="Export report", command=self.export_report, state="disabled")
-        self.export_button.pack(side="left", padx=8)
-        self.backups_a_button = ttk.Button(actions, text="Backups A", command=lambda: self.open_backups(self.library_a_var), state="normal" if self.library_a_var.get().strip() else "disabled")
-        self.backups_a_button.pack(side="left", padx=8)
-        self.backups_b_button = ttk.Button(actions, text="Backups B", command=lambda: self.open_backups(self.library_b_var), state="normal" if self.library_b_var.get().strip() else "disabled")
-        self.backups_b_button.pack(side="left")
-        self.tree = ttk.Treeview(frame, columns=("category", "count", "details"), show="headings", height=24)
-        for column, title, width in (("category", "Category", 280), ("count", "Count", 100), ("details", "Details", 680)):
+        self.review_conflicts_button.pack(side="left", padx=(7, 0))
+        self.review_fuzzy_button = ttk.Button(actions, text="Review uncertain matches", command=self.review_fuzzy, state="disabled")
+        self.review_fuzzy_button.pack(side="left", padx=(7, 0))
+        self.dry_run_button = ttk.Button(actions, text="Preview plan", command=self.dry_run, style="Primary.TButton", state="disabled")
+        self.dry_run_button.pack(side="left", padx=(7, 0))
+        self.execute_button = ttk.Button(actions, text="Back up & apply…", command=self.execute, style="Danger.TButton", state="disabled")
+        self.execute_button.pack(side="left", padx=(7, 0))
+        advanced = ttk.LabelFrame(frame, text="ADVANCED TOOLS", padding=8)
+        advanced.pack(fill="x", pady=(0, 8))
+        self.export_button = ttk.Button(advanced, text="Export last report", command=self.export_report, state="disabled")
+        self.export_button.pack(side="left")
+        self.backups_a_button = ttk.Button(advanced, text="Manage backups for A", command=lambda: self.open_backups(self.library_a_var), state="normal" if self.library_a_var.get().strip() else "disabled")
+        self.backups_a_button.pack(side="left", padx=(7, 0))
+        self.backups_b_button = ttk.Button(advanced, text="Manage backups for B", command=lambda: self.open_backups(self.library_b_var), state="normal" if self.library_b_var.get().strip() else "disabled")
+        self.backups_b_button.pack(side="left", padx=(7, 0))
+        ttk.Button(advanced, text="Clear result filter", command=lambda: self.filter_results("all")).pack(side="right")
+        results = ttk.LabelFrame(frame, text="03  RESULTS", padding=8)
+        results.pack(fill="both", expand=True)
+        self.tree = ttk.Treeview(results, columns=("category", "count", "details"), show="headings", height=10)
+        for column, title, width in (("category", "Category", 180), ("count", "Count", 70), ("details", "Details", 640)):
             self.tree.heading(column, text=title)
             self.tree.column(column, width=width, anchor="w")
         self.tree.pack(fill="both", expand=True)
-        ttk.Label(frame, textvariable=self.status_var).pack(anchor="w", pady=(12, 0))
+        ttk.Label(frame, textvariable=self.status_var, style="Muted.TLabel").pack(anchor="w", pady=(8, 0))
 
     def _path_row(self, parent: ttk.Frame, label: str, variable: tk.StringVar, browse_title: str = "Select music library") -> None:
         row = ttk.Frame(parent)
@@ -195,36 +248,92 @@ class HarmeluneApp(tk.Tk):
         has_plan = self.plan is not None
         fuzzy = has_plan and any(not match.confirmed for match in self.plan.matches)
         conflicts = has_plan and any(match.metadata_conflict or match.artwork_conflict for match in self.plan.matches)
-        for button, enabled in ((self.review_conflicts_button, conflicts), (self.review_fuzzy_button, fuzzy), (self.dry_run_button, has_plan), (self.execute_button, has_plan), (self.export_button, self.last_report is not None)):
+        backup_ready = bool(self.backup_var.get().strip())
+        mirror_blocked = self.mode_var.get() == SyncMode.MIRROR and bool(fuzzy)
+        can_apply = has_plan and backup_ready and self.preview_ready and not mirror_blocked
+        for button, enabled in ((self.review_conflicts_button, conflicts), (self.review_fuzzy_button, fuzzy), (self.dry_run_button, has_plan), (self.execute_button, can_apply), (self.export_button, self.last_report is not None)):
             button.configure(state="normal" if enabled and not busy else "disabled")
         if hasattr(self, "backups_a_button"):
             self._update_backup_buttons()
+        self._update_workflow()
+
+    def _comparison_rows(self) -> list[tuple[str, str, str, str]]:
+        if not self.plan:
+            return []
+        from harmelune.explain import explain_match
+        rows: list[tuple[str, str, str, str]] = []
+        for match in self.plan.matches:
+            explanation = explain_match(match)
+            if not match.confirmed:
+                category, label = "fuzzy", "Uncertain match"
+            elif match.metadata_conflict or match.artwork_conflict:
+                category, label = "conflicts", "Conflict"
+            else:
+                category, label = "exact", "Exact / confirmed match"
+            details = f"A: {match.library_a.display_artist} — {match.library_a.display_title}  ↔  B: {match.library_b.display_artist} — {match.library_b.display_title}; {explanation.confidence:.0%}; {', '.join(explanation.reasons[:2])}"
+            rows.append((category, label, "1", details))
+        for track in self.plan.library_a_only:
+            rows.append(("a_only", "Only in Library A", "1", f"{track.display_artist} — {track.display_title} · {track.path}"))
+        for track in self.plan.library_b_only:
+            rows.append(("b_only", "Only in Library B", "1", f"{track.display_artist} — {track.display_title} · {track.path}"))
+        return rows
 
     def _refresh_health(self) -> None:
         if self.scan_a is None or self.scan_b is None:
+            for button in getattr(self, "summary_buttons", {}).values():
+                button.configure(state="disabled")
             return
         self.health = build_health_report(self.scan_a, self.scan_b, self.plan)
+        rows = self._comparison_rows()
+        counts = {key: sum(row[0] == key for row in rows) for key in ("exact", "a_only", "b_only", "fuzzy", "conflicts")}
+        labels = {"exact": "Exact matches", "a_only": "Only in A", "b_only": "Only in B", "fuzzy": "Review fuzzy", "conflicts": "Conflicts"}
+        for key, button in self.summary_buttons.items():
+            button.configure(text=f"{labels[key]}\n{counts[key]}", state="normal")
         for item in self.tree.get_children():
             self.tree.delete(item)
-        a, b, p = self.health.library_a, self.health.library_b, self.health.plan
-        rows = [
-            ("Library A tracks", a.track_count, ""),
-            ("Library B tracks", b.track_count, ""),
-            ("A metadata completeness", f"{a.metadata_completeness_pct:.1f}%", f"{a.complete_metadata}/{a.track_count}"),
-            ("B metadata completeness", f"{b.metadata_completeness_pct:.1f}%", f"{b.complete_metadata}/{b.track_count}"),
-            ("A artwork coverage", f"{a.artwork_coverage_pct:.1f}%", f"{a.artwork_tracks}/{a.track_count}"),
-            ("B artwork coverage", f"{b.artwork_coverage_pct:.1f}%", f"{b.artwork_tracks}/{b.track_count}"),
-            ("A duplicate groups", len(a.duplicate_groups), f"{a.duplicate_tracks} tracks"),
-            ("B duplicate groups", len(b.duplicate_groups), f"{b.duplicate_tracks} tracks"),
-            ("A unreadable files", a.unreadable_files, ""),
-            ("B unreadable files", b.unreadable_files, ""),
-            ("Unresolved conflicts", p.unresolved_conflicts, "Current plan"),
-            ("Unresolved fuzzy matches", p.unresolved_fuzzy_matches, "Current plan"),
-            ("A-only tracks", len(self.plan.library_a_only) if self.plan else 0, "Plan"),
-            ("B-only tracks", len(self.plan.library_b_only) if self.plan else 0, "Plan"),
-        ]
-        for row in rows:
-            self.tree.insert("", "end", values=row)
+        if self.active_filter != "all" and not counts.get(self.active_filter, 0):
+            self.active_filter = "all"
+        visible = [row for row in rows if self.active_filter == "all" or row[0] == self.active_filter]
+        for category, label, count, details in visible:
+            self.tree.insert("", "end", values=(label, count, details), tags=(category,))
+        self.tree.tag_configure("fuzzy", foreground="#FFD080")
+        self.tree.tag_configure("conflicts", foreground="#F49BA6")
+        self.tree.tag_configure("exact", foreground="#8BD8C2")
+        self._update_workflow()
+
+    def filter_results(self, category: str) -> None:
+        self.active_filter = category
+        self._refresh_health()
+        labels = {"all": "all results", "exact": "exact matches", "a_only": "tracks only in Library A", "b_only": "tracks only in Library B", "fuzzy": "uncertain matches", "conflicts": "conflicts"}
+        self.status_var.set(f"Showing {labels.get(category, 'selected results')}.")
+
+    def _workflow_title(self) -> str:
+        if not self.library_a_var.get().strip() or not self.library_b_var.get().strip():
+            return "01  Select libraries"
+        if self.plan is None:
+            return "02  Compare"
+        if any(not match.confirmed for match in self.plan.matches) or any(match.metadata_conflict or match.artwork_conflict for match in self.plan.matches):
+            return "03  Review"
+        if not self.preview_ready:
+            return "04  Preview"
+        return "05  Back up & apply"
+
+    def _update_workflow(self) -> None:
+        step = self._workflow_title()
+        self.workflow_var.set(step)
+        if step.startswith("01"):
+            help_text = "Choose two different, accessible music folders. No files are changed."
+        elif step.startswith("02"):
+            help_text = "Compare both libraries to build a reviewable plan. Scanning is read-only."
+        elif step.startswith("03"):
+            fuzzy = sum(not m.confirmed for m in self.plan.matches) if self.plan else 0
+            conflicts = sum(m.metadata_conflict or m.artwork_conflict for m in self.plan.matches) if self.plan else 0
+            help_text = f"Review uncertain matches ({fuzzy}) and metadata/artwork conflicts ({conflicts}) before previewing."
+        elif step.startswith("04"):
+            help_text = "Preview the plan first. Preview does not modify library or backup files."
+        else:
+            help_text = "Preview complete. Apply still requires a verified backup before modifying files."
+        self.workflow_help_var.set(help_text)
 
     def scan(self) -> None:
         self._save_settings()
@@ -247,6 +356,9 @@ class HarmeluneApp(tk.Tk):
 
     def _show_scan(self, library_a: Path, library_b: Path, result_a, result_b, plan: SyncPlan) -> None:
         self.plan, self.scan_a, self.scan_b = plan, result_a, result_b
+        self.preview_ready = False
+        self.last_dry_run = None
+        self.active_filter = "all"
         self.library_a_root, self.library_b_root = library_a, library_b
         self.scan_errors = len(result_a.errors) + len(result_b.errors)
         self.last_report = None
@@ -285,6 +397,8 @@ class HarmeluneApp(tk.Tk):
         decisions = review_fuzzy_matches(self, fuzzy)
         if decisions is not None:
             self.plan = apply_fuzzy_decisions(self.plan, decisions)
+            self.preview_ready = False
+            self.last_dry_run = None
             self._refresh_health()
             self.status_var.set("Fuzzy review saved. Rescan if the filesystem changes.")
             self._update_controls()
