@@ -433,7 +433,8 @@ class HarmeluneApp(tk.Tk):
     def _operation_lines(self, operations, limit: int = 12) -> list[str]:
         lines = []
         for operation in operations[:limit]:
-            kind = getattr(operation.kind, "value", str(operation.kind)).upper()
+            raw_kind = getattr(operation, "kind", getattr(operation, "action", "operation"))
+            kind = getattr(raw_kind, "value", str(raw_kind)).upper()
             source = str(operation.source) if operation.source is not None else "(no source)"
             lines.append(f"{kind}: {source}  →  {operation.destination}")
         if len(operations) > limit:
@@ -455,8 +456,10 @@ class HarmeluneApp(tk.Tk):
             target = "Library B" if self.master_var.get() == "library_a" else "Library A"
             ttk.Label(root, text=f"MIRROR WARNING: {self.master_var.get()} is the master. {target} is the target and may have files replaced or deleted.", style="Danger.TLabel", wraplength=850).pack(anchor="w", pady=(0, 8))
         ttk.Label(root, text="Backup status: not created yet. Apply creates and verifies a backup before modifying files.", style="Muted.TLabel", wraplength=850).pack(anchor="w", pady=(0, 8))
-        body = tk.Text(root, wrap="word", background="#171B27", foreground="#DCE1F0", insertbackground="#DCE1F0", relief="flat", padx=10, pady=10)
-        scrollbar = ttk.Scrollbar(root, orient="vertical", command=body.yview)
+        content = ttk.Frame(root)
+        content.pack(fill="both", expand=True)
+        body = tk.Text(content, wrap="word", background="#171B27", foreground="#DCE1F0", insertbackground="#DCE1F0", relief="flat", padx=10, pady=10)
+        scrollbar = ttk.Scrollbar(content, orient="vertical", command=body.yview)
         body.configure(yscrollcommand=scrollbar.set)
         body.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
