@@ -1,10 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from typing import TypeVar
-
-T = TypeVar("T", bound=tuple[str, ...])
-
 CATEGORIES = ("exact", "a_only", "b_only", "fuzzy", "conflicts")
 
 
