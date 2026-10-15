@@ -312,7 +312,8 @@ class HarmeluneApp(tk.Tk):
             return "01  Select libraries"
         if self.plan is None:
             return "02  Compare"
-        if any(not match.confirmed for match in self.plan.matches) or any(match.metadata_conflict or match.artwork_conflict for match in self.plan.matches):
+        unresolved_conflicts = any(match.metadata_conflict or match.artwork_conflict for match in self.plan.matches)
+        if any(not match.confirmed for match in self.plan.matches) or (unresolved_conflicts and not self.review_choices):
             return "03  Review"
         if not self.preview_ready:
             return "04  Preview"
@@ -438,12 +439,23 @@ class HarmeluneApp(tk.Tk):
                 result = dry_run_reconcile(self.plan, decisions, self._backup_root())
             else:
                 result = dry_run_mirror(self.plan, direction)
-            messagebox.showinfo("Dry run — no files changed", f"Mode: {mode}\nStatus: {result.status}\nOperations: {len(result.operations)}\nSkipped: {len(result.skipped)}\nBlocked: {len(result.blocked)}\n\nNo library or backup files were modified.", parent=self)
+            self.last_dry_run = result
+            self.preview_ready = not bool(result.blocked)
+            self._update_controls()
+            self._update_workflow()
+            summary = f"Mode: {mode}\nStatus: {result.status}\nPlanned operations: {len(result.operations)}\nSkipped: {len(result.skipped)}\nBlocked: {len(result.blocked)}\n\nBackup: not created yet — a verified backup is required during apply.\nNo library or backup files were modified."
+            if mode == SyncMode.MIRROR:
+                target = "Library B" if self.master_var.get() == "library_a" else "Library A"
+                summary = f"WARNING — MIRROR MODE\nMaster/source: {self.master_var.get()}\nTarget being conformed: {target}\n\n" + summary
+            messagebox.showinfo("Synchronization preview — no files changed", summary, parent=self)
         except Exception as exc:
             messagebox.showerror("Dry run blocked", str(exc), parent=self)
 
     def execute(self) -> None:
         if not self.plan:
+            return
+        if not self.preview_ready:
+            messagebox.showwarning("Preview required", "Run Preview plan and review the proposed operations before applying changes.", parent=self)
             return
         if self.mode_var.get() == SyncMode.SAFE:
             self._execute_safe()
@@ -458,7 +470,9 @@ class HarmeluneApp(tk.Tk):
         except (OSError, ValueError) as exc:
             messagebox.showerror("Safe mode blocked", str(exc), parent=self)
             return
-        if not messagebox.askyesno("Apply Safe mode?", "Safe mode only adds missing files. It never deletes or overwrites existing destination files.\n\nCreate a verified backup and continue?", parent=self):
+        preview = self.last_dry_run
+        summary = f"Planned operations: {len(preview.operations) if preview else 'Unknown'}\nBlocked items: {len(preview.blocked) if preview else 'Unknown'}\nBackup: will be created and verified before changes.\n\nSafe mode only adds missing files; it does not delete or overwrite existing destination files.\n\nContinue?"
+        if not messagebox.askyesno("Confirm Safe mode", summary, parent=self):
             return
         self._run_worker(lambda: report_from_safe(execute_safe(self.plan, direction, backup)))
 
@@ -472,6 +486,10 @@ class HarmeluneApp(tk.Tk):
         except (OSError, ValueError) as exc:
             messagebox.showerror("Reconcile blocked", str(exc), parent=self)
             return
+        preview = self.last_dry_run
+        summary = f"Planned operations: {len(preview.operations) if preview else 'Unknown'}\nBackup: will be created and verified before changes.\n\nReconcile applies the explicit decisions you reviewed. Continue?"
+        if not messagebox.askyesno("Confirm Reconcile", summary, parent=self):
+            return
         self._run_worker(lambda: report_from_reconcile(execute_reconcile(self.plan, decisions, backup)))
 
     def _execute_mirror(self) -> None:
@@ -484,8 +502,11 @@ class HarmeluneApp(tk.Tk):
         if preview.blocked:
             messagebox.showwarning("Mirror blocked", "Resolve all fuzzy matches before Mirror execution.", parent=self)
             return
-        messagebox.showinfo("Mirror preview", f"Copies: {len(preview.copies)}\nReplacements: {len(preview.replacements)}\nDeletions: {len(preview.deletions)}", parent=self)
-        confirmation = simpledialog.askstring("Confirm Mirror", "Type MIRROR exactly to apply these changes:", parent=self)
+        target_name = "Library B" if self.master_var.get() == "library_a" else "Library A"
+        warning = (f"MIRROR MODE — DESTRUCTIVE CHANGES POSSIBLE\n\nMaster/source: {self.master_var.get()}\nTarget being conformed: {target_name}\n\nCopies: {len(preview.copies)}\nReplacements: {len(preview.replacements)}\nDeletions: {len(preview.deletions)}\n\nA verified backup will be created before changes. Files in the target that are not in the master may be deleted according to this plan.")
+        if not messagebox.askokcancel("Review Mirror changes", warning, icon="warning", parent=self):
+            return
+        confirmation = simpledialog.askstring("Confirm Mirror", "The target library may be changed or have files deleted.\nType MIRROR exactly to continue:", parent=self)
         if confirmation is None:
             return
         self._run_worker(lambda: report_from_mirror(execute_mirror(self.plan, direction, backup, confirmation)))
@@ -502,7 +523,10 @@ class HarmeluneApp(tk.Tk):
 
     def _execution_done(self, report: ExecutionReport) -> None:
         self.last_report = report
+        self.preview_ready = False
+        self.last_dry_run = None
         self._set_busy(False)
+        self._refresh_health()
         self.status_var.set(f"{report.mode.title()} finished with status {report.final_status.value}.")
         messagebox.showinfo("Execution result", f"Mode: {report.mode}\nStatus: {report.final_status.value}\nAttempted: {report.attempted}\nSucceeded: {report.succeeded}\nFailed: {report.failed}\nSkipped: {report.skipped}\nRolled back: {report.rolled_back}", parent=self)
 
