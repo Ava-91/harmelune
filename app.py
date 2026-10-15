@@ -21,6 +21,7 @@ from harmelune.review import ConflictChoice
 from harmelune.scanner import scan_library
 from harmelune.settings import Settings, SettingsStore
 from harmelune.sync import execute_safe
+from harmelune.ui_state import comparison_counts, filter_comparison_rows, workflow_step
 
 
 class HarmeluneApp(tk.Tk):
@@ -172,7 +173,7 @@ class HarmeluneApp(tk.Tk):
         ttk.Label(row, text=label).pack(side="left", padx=(0, 6))
         combo = ttk.Combobox(row, textvariable=variable, values=values, state="readonly", width=14)
         combo.pack(side="left")
-        combo.bind("<<ComboboxSelected>>", lambda _event: self._save_settings())
+        combo.bind("<<ComboboxSelected>>", lambda _event: (self._save_settings(), self._update_controls()))
 
     def browse(self, variable: tk.StringVar, title: str) -> None:
         path = filedialog.askdirectory(title=title)
@@ -285,7 +286,7 @@ class HarmeluneApp(tk.Tk):
             return
         self.health = build_health_report(self.scan_a, self.scan_b, self.plan)
         rows = self._comparison_rows()
-        counts = {key: sum(row[0] == key for row in rows) for key in ("exact", "a_only", "b_only", "fuzzy", "conflicts")}
+        counts = comparison_counts(rows)
         labels = {"exact": "Exact matches", "a_only": "Only in A", "b_only": "Only in B", "fuzzy": "Review fuzzy", "conflicts": "Conflicts"}
         for key, button in self.summary_buttons.items():
             button.configure(text=f"{labels[key]}\n{counts[key]}", state="normal")
@@ -293,7 +294,7 @@ class HarmeluneApp(tk.Tk):
             self.tree.delete(item)
         if self.active_filter != "all" and not counts.get(self.active_filter, 0):
             self.active_filter = "all"
-        visible = [row for row in rows if self.active_filter == "all" or row[0] == self.active_filter]
+        visible = filter_comparison_rows(rows, self.active_filter)
         for category, label, count, details in visible:
             self.tree.insert("", "end", values=(label, count, details), tags=(category,))
         self.tree.tag_configure("fuzzy", foreground="#FFD080")
@@ -308,16 +309,13 @@ class HarmeluneApp(tk.Tk):
         self.status_var.set(f"Showing {labels.get(category, 'selected results')}.")
 
     def _workflow_title(self) -> str:
-        if not self.library_a_var.get().strip() or not self.library_b_var.get().strip():
-            return "01  Select libraries"
-        if self.plan is None:
-            return "02  Compare"
-        unresolved_conflicts = any(match.metadata_conflict or match.artwork_conflict for match in self.plan.matches)
-        if any(not match.confirmed for match in self.plan.matches) or (unresolved_conflicts and not self.review_choices):
-            return "03  Review"
-        if not self.preview_ready:
-            return "04  Preview"
-        return "05  Back up & apply"
+        return workflow_step(
+            bool(self.library_a_var.get().strip()),
+            bool(self.library_b_var.get().strip()),
+            self.plan,
+            self.preview_ready,
+            self.review_choices,
+        )
 
     def _update_workflow(self) -> None:
         step = self._workflow_title()
@@ -388,7 +386,10 @@ class HarmeluneApp(tk.Tk):
         choices = review_conflicts(self, conflicts)
         if choices is not None:
             self.review_choices = choices
+            self.preview_ready = False
+            self.last_dry_run = None
             self._refresh_health()
+            self._update_controls()
             self.status_var.set(f"Saved {len(choices)} conflict decision(s).")
 
     def review_fuzzy(self) -> None:
