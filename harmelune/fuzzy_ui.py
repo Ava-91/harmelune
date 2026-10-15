@@ -13,8 +13,21 @@ class FuzzyReviewDialog(tk.Toplevel):
     def __init__(self, parent: tk.Misc, matches: list[Match]) -> None:
         super().__init__(parent)
         self.title("Review fuzzy matches")
-        self.geometry("920x650")
+        self.geometry("1040x690")
+        self.minsize(900,600)
         self.transient(parent)
+        try:
+            ttk.Style(self).theme_use("clam")
+            style = ttk.Style(self)
+            style.configure(".", background="#10131B", foreground="#E7EAF4", font=("Segoe UI", 10))
+            style.configure("TFrame", background="#10131B")
+            style.configure("TLabel", background="#10131B", foreground="#DCE1F0")
+            style.configure("TLabelframe", background="#10131B", foreground="#B7C0FF")
+            style.configure("TLabelframe.Label", background="#10131B", foreground="#B7C0FF")
+            style.configure("TButton", background="#252B40", foreground="#E7EAF4", padding=(10, 7))
+            self.configure(background="#10131B")
+        except tk.TclError:
+            pass
         self.grab_set()
         self.matches = matches
         self.index = 0
@@ -41,8 +54,8 @@ class FuzzyReviewDialog(tk.Toplevel):
         actions = ttk.Frame(root)
         actions.pack(fill="x", pady=18)
         ttk.Button(actions, text="← Previous", command=self.previous).pack(side="left")
-        ttk.Button(actions, text="✓ Same Song", command=lambda: self.choose(True)).pack(side="left", padx=8)
-        ttk.Button(actions, text="✕ Different Songs", command=lambda: self.choose(False)).pack(side="left")
+        ttk.Button(actions, text="✓ Confirm match", command=lambda: self.choose(True)).pack(side="left", padx=8)
+        ttk.Button(actions, text="✕ Keep separate", command=lambda: self.choose(False)).pack(side="left")
         ttk.Button(actions, text="Finish Review", command=self.finish).pack(side="right")
         ttk.Button(actions, text="Cancel", command=self.cancel).pack(side="right", padx=8)
 
@@ -57,6 +70,7 @@ class FuzzyReviewDialog(tk.Toplevel):
         ttk.Label(panel, text=f"Album: {track.display_album}").pack(anchor="w")
         duration = f"{track.duration:.1f}s" if track.duration is not None else "Unknown"
         ttk.Label(panel, text=f"Duration: {duration}").pack(anchor="w")
+        ttk.Label(panel, text=f"Format / size: {track.path.suffix.lower() or 'Unknown'} · {track.size:,} bytes").pack(anchor="w")
         ttk.Label(panel, text=f"Filename: {track.path.name}", wraplength=370).pack(anchor="w", pady=(0, 12))
         ttk.Label(panel, text=f"SHA-256: {track.file_hash or 'Unavailable'}", wraplength=370).pack(anchor="w")
         ttk.Label(panel, text=f"Artwork: {track.artwork_count} embedded image(s)").pack(anchor="w")
@@ -71,6 +85,11 @@ class FuzzyReviewDialog(tk.Toplevel):
         reason_text = "Evidence: " + " • ".join(details.reasons)
         if details.conflicts:
             reason_text += "\nConflicts: " + " • ".join(details.conflicts)
+        left_duration, right_duration = match.library_a.duration, match.library_b.duration
+        if left_duration is not None and right_duration is not None:
+            reason_text += f"\nDuration difference: {abs(left_duration - right_duration):.2f}s"
+        else:
+            reason_text += "\nDuration difference: unavailable (one or both files have no duration metadata)"
         self.explanation.configure(text=reason_text)
         self._populate(self.panel_a, match.library_a)
         self._populate(self.panel_b, match.library_b)
