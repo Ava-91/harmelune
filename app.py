@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 import tkinter as tk
@@ -26,6 +27,7 @@ from harmelune.settings import Settings, SettingsStore, default_config_dir
 from harmelune.sync import execute_safe
 from harmelune.ui_state import comparison_counts, filter_comparison_rows, workflow_step
 from harmelune.health_ui import open_health_dashboard
+from harmelune.history import HistoryCorruptError, SyncHistoryStore
 from harmelune.ui_theme import configure_theme
 
 
@@ -176,6 +178,7 @@ class HarmeluneApp(tk.Tk):
         self.backups_b_button.pack(side="left", padx=(7, 0))
         self.health_button = ttk.Button(advanced, text="Library health…", command=self.show_health, state="disabled")
         self.health_button.pack(side="left", padx=(7, 0))
+        ttk.Button(advanced, text="Sync history…", command=self.open_sync_history).pack(side="left", padx=(7, 0))
         ttk.Button(advanced, text="Clear result filter", command=lambda: self.filter_results("all")).pack(side="right")
         results = ttk.LabelFrame(frame, text="03  RESULTS", padding=8)
         results.pack(fill="both", expand=True)
@@ -770,12 +773,79 @@ class HarmeluneApp(tk.Tk):
 
     def _execution_done(self, report: ExecutionReport) -> None:
         self.last_report = report
+        try:
+            SyncHistoryStore(default_config_dir() / "history.json").append(report)
+        except (OSError, ValueError, HistoryCorruptError) as exc:
+            messagebox.showwarning(
+                "History was not saved",
+                f"The operation report is available, but local history could not be updated. Preserve any existing history file.\n\n{exc}",
+                parent=self,
+            )
         self.preview_ready = False
         self.last_dry_run = None
         self._set_busy(False)
         self._refresh_health()
         self.status_var.set(f"{report.mode.title()} finished with status {report.final_status.value}.")
         messagebox.showinfo("Execution result", f"Mode: {report.mode}\nStatus: {report.final_status.value}\nAttempted: {report.attempted}\nSucceeded: {report.succeeded}\nFailed: {report.failed}\nSkipped: {report.skipped}\nRolled back: {report.rolled_back}", parent=self)
+
+    def open_sync_history(self) -> None:
+        store = SyncHistoryStore(default_config_dir() / "history.json")
+        try:
+            entries = store.list_entries()
+        except HistoryCorruptError as exc:
+            messagebox.showerror("Sync history needs inspection", str(exc), parent=self)
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("Harmelune · Sync history")
+        dialog.geometry("900x560")
+        dialog.minsize(650, 400)
+        dialog.transient(self)
+        self._configure_dialog_theme(dialog)
+        root = ttk.Frame(dialog, padding=14)
+        root.pack(fill="both", expand=True)
+        ttk.Label(root, text="Sync history", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(root, text="Local operation records only · history is not an undo mechanism", style="Muted.TLabel").pack(anchor="w", pady=(0, 8))
+        query_var = tk.StringVar()
+        search = ttk.Entry(root, textvariable=query_var)
+        search.pack(fill="x", pady=(0, 8))
+        search.insert(0, "")
+        columns = ("created", "mode", "status", "succeeded", "failed")
+        table = ttk.Treeview(root, columns=columns, show="headings", height=9)
+        for key, label, width in (("created", "Created (UTC)", 190), ("mode", "Mode", 100), ("status", "Status", 110), ("succeeded", "Succeeded", 90), ("failed", "Failed", 80)):
+            table.heading(key, text=label)
+            table.column(key, width=width, minwidth=60, anchor="w")
+        table.pack(fill="both", expand=True)
+        details = tk.Text(root, height=8, wrap="word", background="#10131B", foreground="#E8EAF2")
+        details.pack(fill="both", expand=True, pady=(8, 0))
+        visible: dict[str, dict] = {}
+        def refresh(*_args) -> None:
+            table.delete(*table.get_children())
+            visible.clear()
+            query = query_var.get().casefold().strip()
+            for index, entry in enumerate(entries):
+                report = entry["report"]
+                haystack = (entry["created_at"] + " " + json.dumps(report, ensure_ascii=False)).casefold()
+                if query and query not in haystack:
+                    continue
+                key = str(index)
+                visible[key] = entry
+                table.insert("", "end", iid=key, values=(
+                    entry["created_at"], report.get("mode", "—"), report.get("final_status", "—"),
+                    report.get("succeeded", 0), report.get("failed", 0),
+                ))
+        def show_details(_event=None) -> None:
+            selection = table.selection()
+            if not selection:
+                return
+            entry = visible.get(selection[0])
+            if entry:
+                details.delete("1.0", "end")
+                details.insert("1.0", json.dumps(entry, ensure_ascii=False, indent=2))
+        query_var.trace_add("write", refresh)
+        table.bind("<<TreeviewSelect>>", show_details)
+        refresh()
+        search.focus_set()
+        ttk.Button(root, text="Close", command=dialog.destroy).pack(anchor="e", pady=(8, 0))
 
     def _execution_failed(self, exc: Exception) -> None:
         self._set_busy(False)
