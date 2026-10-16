@@ -50,7 +50,7 @@ def test_repair_makes_backup_and_updates_only_requested_tags(tmp_path: Path, mon
     fake = FakeAudio(path)
     monkeypatch.setattr(metadata, "File", lambda *_args, **_kwargs: fake)
 
-    backup = metadata.repair_metadata(path, {"title": "New title", "tracknumber": "02"}, tmp_path / "Backups")
+    backup = metadata.repair_metadata(path, {"title": "New title", "tracknumber": "02"}, tmp_path.parent / f"{tmp_path.name}-Backups")
 
     assert backup.read_bytes() == b"original"
     assert b"title=New title" in path.read_bytes()
@@ -66,7 +66,7 @@ def test_failed_tag_save_restores_original_file(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(metadata, "File", lambda *_args, **_kwargs: fake)
 
     with pytest.raises(metadata.MetadataRepairError, match="original file was restored"):
-        metadata.repair_metadata(path, {"title": "New title"}, tmp_path / "Backups")
+        metadata.repair_metadata(path, {"title": "New title"}, tmp_path.parent / f"{tmp_path.name}-Backups")
     assert path.read_bytes() == b"original"
 
 
@@ -76,9 +76,9 @@ def test_rejects_unknown_fields_empty_changes_and_overlapping_backup(tmp_path: P
     fake = FakeAudio(path)
     monkeypatch.setattr(metadata, "File", lambda *_args, **_kwargs: fake)
     with pytest.raises(ValueError, match="Unsupported metadata fields"):
-        metadata.repair_metadata(path, {"lyrics": "no"}, tmp_path / "Backups")
+        metadata.repair_metadata(path, {"lyrics": "no"}, tmp_path.parent / f"{tmp_path.name}-Backups")
     with pytest.raises(ValueError, match="No metadata changes"):
-        metadata.repair_metadata(path, {}, tmp_path / "Backups")
+        metadata.repair_metadata(path, {}, tmp_path.parent / f"{tmp_path.name}-Backups")
     with pytest.raises(ValueError, match="separate"):
         metadata.repair_metadata(path, {"title": "New title"}, tmp_path / "subfolder")
 
@@ -89,4 +89,4 @@ def test_rejects_unchanged_metadata(tmp_path: Path, monkeypatch):
     fake = FakeAudio(path)
     monkeypatch.setattr(metadata, "File", lambda *_args, **_kwargs: fake)
     with pytest.raises(ValueError, match="unchanged"):
-        metadata.repair_metadata(path, {"title": "Old title"}, tmp_path / "Backups")
+        metadata.repair_metadata(path, {"title": "Old title"}, tmp_path.parent / f"{tmp_path.name}-Backups")
