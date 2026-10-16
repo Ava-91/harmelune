@@ -1,8 +1,9 @@
 from __future__ import annotations
-from .ui_theme import configure_theme
 
 import tkinter as tk
 from tkinter import ttk
+
+from .ui_theme import configure_theme
 
 from .explain import explain_match
 from .models import Match, SyncPlan
@@ -16,7 +17,6 @@ class FuzzyReviewDialog(tk.Toplevel):
         self.title("Review fuzzy matches")
         self.geometry("1040x690")
         self.minsize(640, 440)
-        self.minsize(900,600)
         self.transient(parent)
         configure_theme(self, dialog=True)
         self.grab_set()
