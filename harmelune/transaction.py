@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from .backup import MANIFEST_NAME, BackupVerificationError, verify_backup
+from .backup import MANIFEST_NAME, BackupVerificationError, verify_backup, verify_backup_contents
 
 
 class OperationKind(str, Enum):
@@ -52,7 +52,6 @@ def _restore_from_backup(library: Path, backup: Path) -> None:
     backup = backup.resolve()
     if library == backup or library.is_relative_to(backup) or backup.is_relative_to(library):
         raise ValueError("Rollback backup overlaps the library.")
-    verify_backup_contents = __import__("harmelune.backup", fromlist=["verify_backup_contents"]).verify_backup_contents
     verify_backup_contents(backup)
 
     # Stage a complete copy before touching the live library. This reduces (but cannot
