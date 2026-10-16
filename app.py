@@ -16,6 +16,7 @@ from harmelune.first_run import FirstRunWizard, is_first_run
 from harmelune.fuzzy_ui import apply_fuzzy_decisions, review_fuzzy_matches
 from harmelune.health import build_health_report
 from harmelune.matcher import build_plan
+from harmelune.metadata import MetadataRepairError, inspect_metadata, repair_metadata
 from harmelune.models import SyncMode, SyncPlan
 from harmelune.operation_journal import JournalCorruptError, OperationJournal
 from harmelune.playlist import inspect_playlist, suggest_replacements
@@ -182,6 +183,7 @@ class HarmeluneApp(tk.Tk):
         self.playlist_button = ttk.Button(advanced, text="Check playlist…", command=self.check_playlist)
         self.playlist_button.pack(side="left", padx=(7, 0))
         ttk.Button(advanced, text="Sync history…", command=self.open_sync_history).pack(side="left", padx=(7, 0))
+        ttk.Button(advanced, text="Repair metadata…", command=self.open_metadata_repair).pack(side="left", padx=(7, 0))
         ttk.Button(advanced, text="Clear result filter", command=lambda: self.filter_results("all")).pack(side="right")
         results = ttk.LabelFrame(frame, text="03  RESULTS", padding=8)
         results.pack(fill="both", expand=True)
@@ -891,6 +893,65 @@ class HarmeluneApp(tk.Tk):
         refresh()
         search.focus_set()
         ttk.Button(root, text="Close", command=dialog.destroy).pack(anchor="e", pady=(8, 0))
+
+    def open_metadata_repair(self) -> None:
+        selected = filedialog.askopenfilename(
+            title="Choose an audio file to inspect",
+            filetypes=[("Audio files", "*.mp3 *.m4a *.m4b *.flac *.wav *.ogg *.opus *.aac *.wma"), ("All files", "*.*")],
+        )
+        if not selected:
+            return
+        path = Path(selected)
+        try:
+            current = inspect_metadata(path)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Metadata inspection failed", str(exc), parent=self)
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("Harmelune · Metadata repair")
+        dialog.geometry("620x360")
+        dialog.minsize(480, 320)
+        dialog.transient(self)
+        self._configure_dialog_theme(dialog)
+        root = ttk.Frame(dialog, padding=16)
+        root.pack(fill="both", expand=True)
+        ttk.Label(root, text="Metadata repair", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(root, text=str(path), style="Muted.TLabel", wraplength=560).pack(anchor="w", pady=(0, 10))
+        variables: dict[str, tk.StringVar] = {}
+        for field, label in (("title", "Title"), ("artist", "Artist"), ("album", "Album"), ("tracknumber", "Track number")):
+            row = ttk.Frame(root)
+            row.pack(fill="x", pady=4)
+            ttk.Label(row, text=label, width=16).pack(side="left")
+            variable = tk.StringVar(value=current[field])
+            variables[field] = variable
+            ttk.Entry(row, textvariable=variable).pack(side="left", fill="x", expand=True)
+        ttk.Label(root, text="A full-file backup is created before tag changes. Blank fields remove that tag.", style="Muted.TLabel", wraplength=560).pack(anchor="w", pady=(8, 10))
+        def save_changes() -> None:
+            updates = {field: variable.get().strip() for field, variable in variables.items() if variable.get().strip() != current[field].strip()}
+            if not updates:
+                messagebox.showinfo("No changes", "No metadata values have changed.", parent=dialog)
+                return
+            summary = "\n".join(f"{field}: {current[field] or '(empty)'} → {value or '(remove)'}" for field, value in updates.items())
+            if not messagebox.askyesno(
+                "Confirm metadata changes",
+                f"Update {len(updates)} tag(s)?\n\n{summary}\n\n"
+                "Harmelune will back up the complete audio file first.",
+                parent=dialog,
+            ):
+                return
+            try:
+                backup = repair_metadata(path, updates, default_config_dir() / "metadata-backups")
+            except (OSError, ValueError, MetadataRepairError) as exc:
+                messagebox.showerror("Metadata repair failed", str(exc), parent=dialog)
+                return
+            self.status_var.set(f"Metadata updated. Original file backup: {backup}")
+            messagebox.showinfo("Metadata updated", f"Tags were updated successfully.\nOriginal file backup:\n{backup}", parent=dialog)
+            dialog.destroy()
+            self._invalidate_scan()
+        buttons = ttk.Frame(root)
+        buttons.pack(fill="x", pady=(8, 0))
+        ttk.Button(buttons, text="Save changes…", command=save_changes, style="Primary.TButton").pack(side="right")
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="right", padx=(0, 8))
 
     def export_report(self) -> None:
         if not self.last_report:
