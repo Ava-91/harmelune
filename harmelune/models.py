@@ -74,6 +74,8 @@ class ScanResult:
     tracks: list[Track] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     fingerprint: dict[str, FileState] = field(default_factory=dict)
+    unsupported_audio_files: int = 0
+    enumeration_complete: bool = True
 
 
 @dataclass(slots=True, init=False)
