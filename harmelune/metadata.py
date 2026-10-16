@@ -21,10 +21,13 @@ def inspect_metadata(path: str | Path) -> dict[str, str]:
     if audio is None:
         raise ValueError(f"Unsupported or unreadable audio format: {path}")
     tags = audio.tags or {}
-    return {
-        field: str(tags.get(field, [""])[0] if isinstance(tags.get(field, [""]), (list, tuple)) else tags.get(field, "") or "")
-        for field in FIELDS
-    }
+    result: dict[str, str] = {}
+    for field in FIELDS:
+        value = tags.get(field, "")
+        if isinstance(value, (list, tuple)):
+            value = value[0] if value else ""
+        result[field] = str(value or "")
+    return result
 
 
 def repair_metadata(
