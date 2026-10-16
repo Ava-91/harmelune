@@ -133,3 +133,16 @@ h1 { margin: 0; color: #f0f2f7; font-size: clamp(25px, 3vw, 34px); line-height: 
 .error-notice { margin: 14px 0; padding: 13px 15px; border: 1px solid #6a3b46; border-radius: 6px; color: #f0a5b0; background: #25171e; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
 .error-notice ul { margin-bottom: 0; padding-left: 18px; }
 @media (max-width: 900px) { .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .table-toolbar { flex-direction: column; } .table-toolbar select { width: 100%; } }
+/* Phase 3 read-only scan health and result pagination */
+.health-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 14px 0 20px; }
+.health-card { display: grid; gap: 7px; min-width: 0; padding: 14px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+.health-card > span { color: var(--muted); font-size: 11px; }
+.health-card strong { font-size: 13px; font-weight: 650; }
+.health-card small { color: var(--subtle); font-size: 10px; line-height: 1.5; }
+.health-card.healthy strong { color: var(--green); }
+.health-card.warning { border-color: #6a5430; }
+.health-card.warning strong { color: var(--amber); }
+.page-controls { display: flex; align-items: center; gap: 8px; }
+.page-button { min-height: 30px; padding: 6px 10px; font-size: 11px; }
+.page-button:disabled { opacity: .4; cursor: not-allowed; }
+@media (max-width: 900px) { .health-grid { grid-template-columns: 1fr; } .table-footer { flex-wrap: wrap; } }
