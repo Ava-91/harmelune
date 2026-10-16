@@ -28,6 +28,9 @@
     "active": true,
     "targets": [
       "nsis"
+    ],
+    "resources": [
+      "binaries/harmelune-sidecar.exe"
     ]
   }
 }
