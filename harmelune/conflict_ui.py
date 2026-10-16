@@ -1,9 +1,10 @@
 from __future__ import annotations
-from .ui_theme import configure_theme
 
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
+
+from .ui_theme import configure_theme
 
 from .artwork import make_preview
 from .explain import explain_match
@@ -18,6 +19,7 @@ class ConflictReviewDialog(tk.Toplevel):
         super().__init__(parent)
         self.title("Review conflicts")
         self.geometry("980x720")
+        self.minsize(640, 460)
         self.transient(parent)
         configure_theme(self, dialog=True)
         self.grab_set()
