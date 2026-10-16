@@ -29,6 +29,7 @@ from harmelune.reconcile import ReconcileDecision, execute_reconcile
 from harmelune.review import ConflictChoice
 from harmelune.scanner import scan_library
 from harmelune.settings import Settings, SettingsStore, default_config_dir
+from harmelune.services import execute_workflow, preview_workflow, scan_libraries
 from harmelune.sync import execute_safe
 from harmelune.ui_state import comparison_counts, filter_comparison_rows, workflow_step
 from harmelune.health_ui import open_health_dashboard
@@ -495,27 +496,24 @@ class HarmeluneApp(tk.Tk):
         self.status_var.set("Scanning Library A… cancellation is available between library scans.")
         def worker() -> None:
             try:
-                result_a = scan_library(
+                bundle = scan_libraries(
                     library_a,
-                    "a",
-                    progress=lambda count: self.after(0, lambda count=count: self.status_var.set(f"Scanning Library A… {count} file(s) visited.")),
-                    cancel=self.cancel_scan_event.is_set,
-                )
-                if self.cancel_scan_event.is_set():
-                    self.after(0, self._scan_cancelled)
-                    return
-                self.after(0, lambda: self.status_var.set("Library A scanned. Scanning Library B…"))
-                result_b = scan_library(
                     library_b,
-                    "b",
-                    progress=lambda count: self.after(0, lambda count=count: self.status_var.set(f"Scanning Library B… {count} file(s) visited.")),
+                    fuzzy_threshold=self.settings.fuzzy_threshold,
+                    progress=lambda side, count: self.after(
+                        0,
+                        lambda side=side, count=count: self.status_var.set(
+                            f"Scanning Library {'A' if side == 'a' else 'B'}… {count} file(s) visited."
+                        ),
+                    ),
                     cancel=self.cancel_scan_event.is_set,
                 )
-                if self.cancel_scan_event.is_set():
+                if bundle is None:
                     self.after(0, self._scan_cancelled)
                     return
-                plan = build_plan(result_a, result_b, threshold=self.settings.fuzzy_threshold)
-                self.after(0, lambda: self._show_scan(library_a, library_b, result_a, result_b, plan))
+                self.after(0, lambda: self._show_scan(
+                    bundle.library_a, bundle.library_b, bundle.scan_a, bundle.scan_b, bundle.plan
+                ))
             except Exception as exc:
                 self.after(0, lambda error=exc: self._scan_failed(error))
         threading.Thread(target=worker, daemon=True).start()
@@ -691,15 +689,14 @@ class HarmeluneApp(tk.Tk):
         try:
             direction = self._direction()
             mode = self.mode_var.get()
-            if mode == SyncMode.SAFE:
-                result = dry_run_safe(self.plan, direction)
-            elif mode == SyncMode.RECONCILE:
-                decisions = self._reconcile_decisions()
-                if decisions is None:
-                    raise ValueError("Every Reconcile item needs an explicit decision.")
-                result = dry_run_reconcile(self.plan, decisions, self._backup_root())
-            else:
-                result = dry_run_mirror(self.plan, direction)
+            decisions = self._reconcile_decisions() if mode == SyncMode.RECONCILE else None
+            result = preview_workflow(
+                self.plan,
+                mode,
+                direction,
+                decisions=decisions,
+                backup_root=self._backup_root() if mode == SyncMode.RECONCILE else None,
+            )
             self.last_dry_run = result
             self.preview_ready = not bool(result.blocked)
             self._update_controls()
@@ -732,7 +729,7 @@ class HarmeluneApp(tk.Tk):
         summary = f"Planned operations: {len(preview.operations) if preview else 'Unknown'}\n" + "\n".join(operations) + f"\n\nBackup: will be created and verified before changes.\n\nSafe mode only adds missing files; it does not delete or overwrite existing destination files.\n\nContinue?"
         if not messagebox.askyesno("Confirm Safe mode", summary, parent=self):
             return
-        self._run_worker(lambda: report_from_safe(execute_safe(self.plan, direction, backup)))
+        self._run_worker(lambda: execute_workflow(self.plan, SyncMode.SAFE, direction, backup))
 
     def _execute_reconcile(self) -> None:
         decisions = self._reconcile_decisions()
@@ -749,7 +746,7 @@ class HarmeluneApp(tk.Tk):
         summary = f"Planned operations: {len(preview.operations) if preview else 'Unknown'}\n" + "\n".join(operations) + f"\n\nBackup: will be created and verified before changes.\n\nReconcile applies the explicit decisions you reviewed. Continue?"
         if not messagebox.askyesno("Confirm Reconcile", summary, parent=self):
             return
-        self._run_worker(lambda: report_from_reconcile(execute_reconcile(self.plan, decisions, backup)))
+        self._run_worker(lambda: execute_workflow(self.plan, SyncMode.RECONCILE, self._direction(), backup, decisions=decisions))
 
     def _execute_mirror(self) -> None:
         try:
@@ -769,7 +766,7 @@ class HarmeluneApp(tk.Tk):
         confirmation = simpledialog.askstring("Confirm Mirror", "The target library may be changed or have files deleted.\nType MIRROR exactly to continue:", parent=self)
         if confirmation is None:
             return
-        self._run_worker(lambda: report_from_mirror(execute_mirror(self.plan, direction, backup, confirmation)))
+        self._run_worker(lambda: execute_workflow(self.plan, SyncMode.MIRROR, direction, backup, confirmation=confirmation))
 
     def _run_worker(self, work) -> None:
         self._set_busy(True)
