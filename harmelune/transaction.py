@@ -7,6 +7,8 @@ from enum import Enum
 from pathlib import Path
 
 from .backup import MANIFEST_NAME, BackupVerificationError, verify_backup, verify_backup_contents
+from .operation_journal import JournalCorruptError, OperationJournal
+from .settings import default_config_dir
 
 
 class OperationKind(str, Enum):
@@ -97,6 +99,14 @@ def execute_transaction(
     for library in affected:
         verify_backup(library, backups[library])
 
+    # Journal creation is a precondition: if it cannot be written, do not mutate files.
+    journal = OperationJournal(default_config_dir() / "operations.json")
+    record = journal.begin(
+        "transaction",
+        backup_paths=[str(path) for path in backups.values()],
+        affected_paths=[str(operation.destination) for operation in operations],
+    )
+
     for operation in operations:
         result.attempted += 1
         try:
@@ -110,12 +120,21 @@ def execute_transaction(
             else:
                 raise ValueError(f"Unknown operation kind: {operation.kind}")
             result.succeeded.append(operation)
-        except (OSError, ValueError) as exc:
+            journal.record_step(
+                record.operation_id,
+                f"{operation.kind.value}:{operation.destination}",
+            )
+        except (OSError, ValueError, JournalCorruptError) as exc:
             result.failures.append(f"Operation {operation.kind.value} failed for {operation.destination}: {exc}")
             break
 
     if not result.failures:
-        return result
+        try:
+            journal.finish(record.operation_id, "completed")
+        except (OSError, ValueError, JournalCorruptError) as exc:
+            result.failures.append(f"Could not finalize operation journal: {exc}")
+        else:
+            return result
 
     rollback_errors: list[str] = []
     for library in sorted(affected, key=lambda item: str(item).casefold()):
@@ -129,4 +148,16 @@ def execute_transaction(
             )
     result.rollback_failures.extend(rollback_errors)
     result.rolled_back = not rollback_errors
+    try:
+        journal.finish(
+            record.operation_id,
+            "rolled_back" if result.rolled_back else "partial",
+            error="; ".join(result.failures),
+            recovery_note="; ".join(result.rollback_failures) if result.rollback_failures else None,
+        )
+    except (OSError, ValueError, JournalCorruptError) as exc:
+        result.rollback_failures.append(
+            f"Could not finalize operation journal; preserve journal for inspection: {exc}"
+        )
+        result.rolled_back = False
     return result
