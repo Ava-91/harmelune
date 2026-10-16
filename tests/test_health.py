@@ -2,7 +2,7 @@ from pathlib import Path
 
 from harmelune.health import build_health_report
 from harmelune.models import Match, ScanResult, SyncPlan, Track
-from harmelune.scanner import scan_library\nfrom harmelune.scanner import scan_library
+from harmelune.scanner import scan_library
 
 
 def scan(side: str, *tracks: Track, errors: list[str] | None = None) -> ScanResult:
