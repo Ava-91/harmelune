@@ -15,12 +15,13 @@ from harmelune.fuzzy_ui import apply_fuzzy_decisions, review_fuzzy_matches
 from harmelune.health import build_health_report
 from harmelune.matcher import build_plan
 from harmelune.models import SyncMode, SyncPlan
+from harmelune.operation_journal import JournalCorruptError, OperationJournal
 from harmelune.mirror import build_mirror_preview, execute_mirror
 from harmelune.path_safety import validate_backup_root, validate_library_pair
 from harmelune.reconcile import ReconcileDecision, execute_reconcile
 from harmelune.review import ConflictChoice
 from harmelune.scanner import scan_library
-from harmelune.settings import Settings, SettingsStore
+from harmelune.settings import Settings, SettingsStore, default_config_dir
 from harmelune.sync import execute_safe
 from harmelune.ui_state import comparison_counts, filter_comparison_rows, workflow_step
 from harmelune.health_ui import open_health_dashboard
@@ -69,6 +70,40 @@ class HarmeluneApp(tk.Tk):
         self._update_controls()
         if is_first_run(self.settings):
             self.after(100, self._run_first_run)
+            self.after(250, self._check_recovery_journal)
+        else:
+            self.after(150, self._check_recovery_journal)
+
+    def _check_recovery_journal(self) -> None:
+        """Warn about interrupted operations; never resume filesystem changes automatically."""
+        journal = OperationJournal(default_config_dir() / "operations.json")
+        try:
+            unfinished = journal.unfinished()
+        except JournalCorruptError as exc:
+            messagebox.showwarning(
+                "Operation journal needs inspection",
+                f"{exc}\n\nNo operation will be resumed automatically. Preserve the journal file and inspect it before syncing.",
+                parent=self,
+            )
+            return
+        if not unfinished:
+            return
+        details = []
+        for record in unfinished[:5]:
+            details.append(
+                f"Operation {record.operation_id[:12]} · {record.mode}\n"
+                f"Affected paths: {len(record.affected_paths)}\n"
+                f"Backups: {', '.join(record.backup_paths) or 'not recorded'}"
+            )
+        if len(unfinished) > 5:
+            details.append(f"... and {len(unfinished) - 5} more interrupted operation(s).")
+        messagebox.showwarning(
+            "Interrupted operation detected",
+            "Harmelune found an operation without a recorded final state. "
+            "It will NOT resume automatically. Inspect the affected library and verify the listed backup before starting another sync.\n\n"
+            + "\n\n".join(details),
+            parent=self,
+        )
 
     def _run_first_run(self) -> None:
         wizard = FirstRunWizard(self, self.settings)
