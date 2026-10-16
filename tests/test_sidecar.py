@@ -145,3 +145,60 @@ def test_page_rejects_invalid_pagination_and_filter_values():
             assert exc.code == "INVALID_ARGUMENT"
         else:
             raise AssertionError(f"Expected invalid arguments to be rejected: {params!r}")
+
+
+def test_safe_preview_returns_operations_without_changing_synthetic_libraries(tmp_path: Path, monkeypatch):
+    from harmelune import sidecar
+
+    a, b = tmp_path / "Library A", tmp_path / "Library B"
+    a.mkdir()
+    b.mkdir()
+    write_wav(a / "Only A.wav", 80)
+    write_wav(b / "Only B.wav", 83)
+    before_a = {p.relative_to(a).as_posix(): p.read_bytes() for p in a.rglob("*") if p.is_file()}
+    before_b = {p.relative_to(b).as_posix(): p.read_bytes() for p in b.rglob("*") if p.is_file()}
+    monkeypatch.setattr(sidecar, "_PLANS", {})
+    scan, _ = sidecar._handle(
+        json.loads(request("scan", "scan", {"library_a": str(a), "library_b": str(b)})),
+        lambda _event: None,
+    )
+    plan_id = scan["result"]["plan_id"]
+    preview, _ = sidecar._handle(
+        json.loads(request("preview", "preview_safe", {"plan_id": plan_id, "master_library": "library_a"})),
+        lambda _event: None,
+    )
+
+    assert preview["ok"] is True
+    assert preview["result"]["mode"] == "safe"
+    assert preview["result"]["mutations_enabled"] is False
+    assert preview["result"]["operation_count"] >= 1
+    assert all(op["kind"] == "copy" for op in preview["result"]["operations"])
+    assert {p.relative_to(a).as_posix(): p.read_bytes() for p in a.rglob("*") if p.is_file()} == before_a
+    assert {p.relative_to(b).as_posix(): p.read_bytes() for p in b.rglob("*") if p.is_file()} == before_b
+
+
+def test_safe_preview_requires_valid_plan_and_explicit_master(tmp_path: Path, monkeypatch):
+    from harmelune import sidecar
+
+    a, b = tmp_path / "Library A", tmp_path / "Library B"
+    a.mkdir()
+    b.mkdir()
+    write_wav(a / "Only A.wav", 80)
+    write_wav(b / "Only B.wav", 83)
+    monkeypatch.setattr(sidecar, "_PLANS", {})
+    scan, _ = sidecar._handle(
+        json.loads(request("scan", "scan", {"library_a": str(a), "library_b": str(b)})),
+        lambda _event: None,
+    )
+    plan_id = scan["result"]["plan_id"]
+
+    for params, expected in [
+        ({"plan_id": "missing", "master_library": "library_a"}, "PLAN_NOT_FOUND"),
+        ({"plan_id": plan_id, "master_library": "unknown"}, "PREVIEW_BLOCKED"),
+    ]:
+        try:
+            sidecar._handle(json.loads(request("preview", "preview_safe", params)), lambda _event: None)
+        except sidecar.ProtocolError as exc:
+            assert exc.code == expected
+        else:
+            raise AssertionError(f"Expected {expected} for {params!r}")
