@@ -415,6 +415,7 @@ class HarmeluneApp(tk.Tk):
         except (OSError, ValueError) as exc:
             messagebox.showerror("Invalid libraries", str(exc), parent=self)
             return
+        self._invalidate_scan()
         self.cancel_scan_event.clear()
         self.scan_active = True
         self._set_busy(True, cancellable_scan=True)
