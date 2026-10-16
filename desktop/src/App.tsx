@@ -17,6 +17,7 @@ type Track = { path: string; name: string; title: string; artist: string; album:
 type ComparisonRow = { category: string; label: string; a: Track | null; b: Track | null; confidence?: number; confirmed?: boolean; metadata_conflict?: boolean; artwork_conflict?: boolean; reasons?: string[] };
 type ScanSummary = { counts: Record<string, number>; library_a: string; library_b: string; tracks_a: number; tracks_b: number; errors_a: string[]; errors_b: string[]; enumeration_complete_a: boolean; enumeration_complete_b: boolean; unsupported_audio_a: number; unsupported_audio_b: number; safe_to_preview: boolean };
 type ScanResult = { plan_id: string; summary: ScanSummary; page: { rows: ComparisonRow[]; total: number; has_more: boolean } };
+type SafePreview = { mode: string; status: string; operations: { kind: string; source: string | null; destination: string }[]; skipped: string[]; blocked: string[]; operation_count: number; mutations_enabled: boolean };
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 async function engineRequest(command: string, params: Record<string, unknown> = {}): Promise<EngineResponse> {
@@ -31,6 +32,9 @@ function App() {
   const [libraryA, setLibraryA] = useState("");
   const [libraryB, setLibraryB] = useState("");
   const [planId, setPlanId] = useState("");
+  const [masterLibrary, setMasterLibrary] = useState("library_a");
+  const [preview, setPreview] = useState<SafePreview | null>(null);
+  const [previewing, setPreviewing] = useState(false);
   const [summary, setSummary] = useState<ScanSummary | null>(null);
   const [rows, setRows] = useState<ComparisonRow[]>([]);
   const [totalRows, setTotalRows] = useState(0);
@@ -94,6 +98,7 @@ function App() {
       else setLibraryB(selected);
       setPlanId("");
       setSummary(null);
+      setPreview(null);
       setRows([]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -119,6 +124,7 @@ function App() {
       const result = response.result as unknown as ScanResult;
       setPlanId(result.plan_id);
       setSummary(result.summary);
+      setPreview(null);
       setRows(result.page.rows);
       setTotalRows(result.page.total);
       setPageIndex(0);
@@ -131,6 +137,29 @@ function App() {
       setProgress("");
     } finally {
       setScanning(false);
+    }
+  };
+
+  const buildSafePreview = async () => {
+    if (!planId || !summary) {
+      setError("Scan both libraries before building a preview.");
+      return;
+    }
+    if (!summary.safe_to_preview) {
+      setError("Preview is blocked because one or both scans have errors or are incomplete.");
+      return;
+    }
+    setError("");
+    setPreviewing(true);
+    try {
+      const response = await engineRequest("preview_safe", { plan_id: planId, master_library: masterLibrary });
+      if (!response.ok) throw new Error(response.error?.message ?? "Could not build the dry-run preview.");
+      setPreview(response.result as unknown as SafePreview);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setPreview(null);
+    } finally {
+      setPreviewing(false);
     }
   };
 
@@ -259,7 +288,39 @@ function App() {
             </>
           )}
 
-          {active !== "library" && active !== "compare" && (
+          {active === "review" && (
+            <>
+              <div className="section-title-row"><div><h2>Safe-mode dry run</h2><p>Preview the Python engine's planned copy operations. This never writes to either library.</p></div><span className="subtle-label">NO FILE CHANGES</span></div>
+              <div className="preview-controls">
+                <label htmlFor="master-library">Copy source (master library)</label>
+                <select id="master-library" value={masterLibrary} onChange={(event) => { setMasterLibrary(event.target.value); setPreview(null); }}>
+                  <option value="library_a">Library A → Library B</option>
+                  <option value="library_b">Library B → Library A</option>
+                </select>
+                <button className="primary-button" disabled={!hasScan || !summary?.safe_to_preview || previewing || !isTauri()} onClick={() => void buildSafePreview()}>{previewing ? "Building preview…" : "Build safe-mode preview"}</button>
+              </div>
+              {!summary && <div className="table-empty">Scan both libraries first. No preview can be built without a current scan.</div>}
+              {summary && !summary.safe_to_preview && <div className="error-notice">Preview blocked: resolve scan errors or incomplete enumeration, then scan again.</div>}
+              {preview && (
+                <div className="preview-result">
+                  <div className="metrics-grid">
+                    <div className="metric-card"><span>Planned copies</span><strong>{preview.operation_count}</strong><small>no files changed</small></div>
+                    <div className="metric-card"><span>Skipped</span><strong>{preview.skipped.length}</strong><small>already present or excluded</small></div>
+                    <div className="metric-card"><span>Blocked</span><strong>{preview.blocked.length}</strong><small>requires attention</small></div>
+                    <div className="metric-card"><span>Engine status</span><strong>{preview.status}</strong><small>Python dry-run result</small></div>
+                  </div>
+                  <div className="notice"><div className="notice-icon">i</div><div><strong>Preview only — execution is still disabled</strong><p>This list is informational. No copy, replace, delete, backup, or restore command is available in this desktop phase.</p></div></div>
+                  <h3 className="preview-list-title">Planned operations {preview.operations.length > 20 ? "(first 20 shown)" : ""}</h3>
+                  {preview.operations.length ? <ul className="preview-list">{preview.operations.slice(0, 20).map((operation, index) => <li key={index}><span className="operation-kind">{operation.kind}</span><span className="operation-path">{operation.source ?? "—"}<span>→ {operation.destination}</span></span></li>)}</ul> : <div className="table-empty">No copy operations are needed for this direction.</div>}
+                  {preview.blocked.length > 0 && <div className="error-notice"><strong>Blocked items</strong><ul>{preview.blocked.slice(0, 10).map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
+                  {preview.skipped.length > 0 && <div className="notice"><div className="notice-icon">i</div><div><strong>Skipped items</strong><ul>{preview.skipped.slice(0, 10).map((item, index) => <li key={index}>{item}</li>)}</ul></div></div>}
+                </div>
+              )}
+              {error && <div className="error-notice" role="alert">{error}</div>}
+            </>
+          )}
+
+          {active !== "library" && active !== "compare" && active !== "review" && (
             <div className="empty-section"><div className="empty-icon" aria-hidden="true">{section.mark}</div><h2>{section.label} is waiting for its safety workflow</h2><p>{section.hint}. This section remains unavailable until review, freshness validation, verified backups, and recovery behavior are connected to the Python engine.</p><button className="secondary-button" onClick={() => setActive("library")}>Back to library workspace</button></div>
           )}
 
