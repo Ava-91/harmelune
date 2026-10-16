@@ -10,6 +10,7 @@ from harmelune.backup_ui import open_backup_manager
 from harmelune.direction import MasterLibrary, SyncDirection
 from harmelune.dry_run import dry_run_mirror, dry_run_reconcile, dry_run_safe
 from harmelune.execution_report import ExecutionReport, report_from_mirror, report_from_reconcile, report_from_safe
+from harmelune.report_exports import export_report as export_report_file
 from harmelune.first_run import FirstRunWizard, is_first_run
 from harmelune.fuzzy_ui import apply_fuzzy_decisions, review_fuzzy_matches
 from harmelune.health import build_health_report
@@ -749,11 +750,24 @@ class HarmeluneApp(tk.Tk):
     def export_report(self) -> None:
         if not self.last_report:
             return
-        destination = filedialog.asksaveasfilename(title="Export execution report", defaultextension=".json", filetypes=[("JSON report", "*.json")], initialfile="harmelune-execution-report.json")
-        if destination:
-            path = self.last_report.save_json(Path(destination))
-            self.status_var.set(f"Report exported to {path}")
-
+        destination = filedialog.asksaveasfilename(
+            title="Export execution report",
+            defaultextension=".json",
+            filetypes=[
+                ("JSON report", "*.json"),
+                ("CSV spreadsheet", "*.csv"),
+                ("HTML report", "*.html"),
+            ],
+            initialfile="harmelune-execution-report.json",
+        )
+        if not destination:
+            return
+        try:
+            path = export_report_file(self.last_report, Path(destination))
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Report export failed", str(exc), parent=self)
+            return
+        self.status_var.set(f"Report exported to {path}")
 
 if __name__ == "__main__":
     HarmeluneApp().mainloop()
