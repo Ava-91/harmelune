@@ -62,7 +62,7 @@ class BackupManagerDialog(tk.Toplevel):
         actions = ttk.Frame(root)
         actions.pack(fill="x", pady=(12, 0))
         ttk.Button(actions, text="Refresh", command=self.refresh).pack(side="left")
-        ttk.Button(actions, text="Verify selected", command=self.verify_selected).pack(side="left", padx=8)
+        ttk.Button(actions, text="Check integrity", command=self.verify_selected).pack(side="left", padx=8)
         ttk.Button(actions, text="Restore selected", command=self.restore, style="Danger.TButton").pack(side="right")
         ttk.Button(actions, text="Close", command=self.destroy).pack(side="right", padx=8)
         self.tree.bind("<<TreeviewSelect>>", self._selection_changed)
@@ -77,7 +77,7 @@ class BackupManagerDialog(tk.Toplevel):
         for item in self.tree.get_children():
             self.tree.delete(item)
         for backup in self.backups:
-            status = "Manifest present" if (backup.path / MANIFEST_NAME).is_file() else "Legacy · unverified"
+            status = "Manifest · integrity-checkable" if (backup.path / MANIFEST_NAME).is_file() else "Legacy · unverified"
             self.tree.insert("", "end", iid=str(backup.path), values=(backup.created_at.strftime("%Y-%m-%d %H:%M:%S"), backup.file_count, _format_size(backup.size_bytes), status, display_path(backup.path)))
         self.status.set(f"{len(self.backups)} backup(s) found. Verify a snapshot before restoring it.")
 
@@ -117,10 +117,10 @@ class BackupManagerDialog(tk.Toplevel):
             self.tree.set(str(backup.path), "verification", "FAILED")
             messagebox.showerror("Backup verification failed", message, parent=self)
             return
-        message = f"Verified successfully: {info.file_count} file(s), {_format_size(info.size_bytes)}. SHA-256 manifest checks passed."
+        message = f"Integrity check passed: {info.file_count} file(s), {_format_size(info.size_bytes)}. SHA-256 matches the stored manifest; this does not prove who created the backup or protect against a rewritten manifest."
         self.verification[str(backup.path)] = ("verified", message)
         self.status.set(message)
-        self.tree.set(str(backup.path), "verification", "Verified")
+        self.tree.set(str(backup.path), "verification", "Integrity checked")
         messagebox.showinfo("Backup verified", message, parent=self)
 
     def restore(self) -> None:
