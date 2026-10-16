@@ -90,10 +90,13 @@ class BackupManagerDialog(tk.Toplevel):
         return next((item for item in self.backups if str(item.path) == selected_path), None)
 
     def _selection_changed(self, _event=None) -> None:
-        backup = self._selected_backup()
-        if backup is not None:
-            result = self.verification.get(str(backup.path))
-            self.status.set(result[1] if result else "Not verified yet. Use Verify selected before restoring.")
+        selection = self.tree.selection()
+        if not selection:
+            self.status.set("Select a backup to inspect or verify it.")
+            return
+        selected_path = selection[0]
+        result = self.verification.get(selected_path)
+        self.status.set(result[1] if result else "Not verified yet. Use Verify selected before restoring.")
 
     def verify_selected(self) -> None:
         backup = self._selected_backup()
