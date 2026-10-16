@@ -7,6 +7,7 @@ from tkinter import filedialog, messagebox, ttk
 from .models import SyncMode
 from .path_safety import validate_backup_root, validate_library_pair
 from .settings import Settings
+from .ui_theme import configure_theme
 
 
 @dataclass(slots=True)
@@ -52,8 +53,9 @@ class FirstRunWizard(tk.Toplevel):
         super().__init__(parent)
         self.title("Harmelune setup")
         self.geometry("700x520")
-        self.minsize(620, 460)
+        self.minsize(560, 400)
         self.transient(parent)
+        configure_theme(self, dialog=True)
         self.grab_set()
         self.state = FirstRunState(
             library_a=initial.library_a,
@@ -66,7 +68,13 @@ class FirstRunWizard(tk.Toplevel):
         self.result: Settings | None = None
         self.step = 0
         self._build()
+        self.bind("<Escape>", lambda _event: self.cancel())
+        self.bind("<Control-w>", lambda _event: self.cancel())
         self._show_step()
+
+    def cancel(self) -> None:
+        self.result = None
+        self.destroy()
 
     def _build(self) -> None:
         root = ttk.Frame(self, padding=24)
