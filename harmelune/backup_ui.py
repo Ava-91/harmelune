@@ -99,6 +99,12 @@ class BackupManagerDialog(tk.Toplevel):
         backup = self._selected_backup()
         if backup is None:
             return
+        if not (backup.path / MANIFEST_NAME).is_file():
+            message = "Legacy backup has no verification manifest. It cannot be cryptographically verified; restore requires explicit acknowledgement."
+            self.verification[str(backup.path)] = ("legacy", message)
+            self.status.set(message)
+            self.tree.set(str(backup.path), "verification", "Legacy · unverified")
+            return
         try:
             info = verify_backup_contents(backup.path)
         except (BackupVerificationError, OSError, ValueError) as exc:
