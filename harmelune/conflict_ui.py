@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .ui_theme import configure_theme
 
 import tkinter as tk
 from pathlib import Path
@@ -18,19 +19,10 @@ class ConflictReviewDialog(tk.Toplevel):
         self.title("Review conflicts")
         self.geometry("980x720")
         self.transient(parent)
-        try:
-            ttk.Style(self).theme_use("clam")
-            style = ttk.Style(self)
-            style.configure(".", background="#10131B", foreground="#E7EAF4", font=("Segoe UI", 10))
-            style.configure("TFrame", background="#10131B")
-            style.configure("TLabel", background="#10131B", foreground="#DCE1F0")
-            style.configure("TLabelframe", background="#10131B", foreground="#B7C0FF")
-            style.configure("TLabelframe.Label", background="#10131B", foreground="#B7C0FF")
-            style.configure("TButton", background="#252B40", foreground="#E7EAF4", padding=(10, 7))
-            self.configure(background="#10131B")
-        except tk.TclError:
-            pass
+        configure_theme(self, dialog=True)
         self.grab_set()
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self.bind("<Control-w>", lambda _event: self.destroy())
         self.matches = conflict_matches(matches)
         self.index = 0
         self.choices: dict[str, ConflictChoice] = {}
