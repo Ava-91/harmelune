@@ -737,7 +737,6 @@ class HarmeluneApp(tk.Tk):
             messagebox.showwarning("Reconcile blocked", "Every missing, conflicting, or fuzzy item needs an explicit decision.", parent=self)
             return
         try:
-            direction = self._direction()
             backup = self._backup_root()
         except (OSError, ValueError) as exc:
             messagebox.showerror("Reconcile blocked", str(exc), parent=self)
@@ -747,7 +746,7 @@ class HarmeluneApp(tk.Tk):
         summary = f"Planned operations: {len(preview.operations) if preview else 'Unknown'}\n" + "\n".join(operations) + f"\n\nBackup: will be created and verified before changes.\n\nReconcile applies the explicit decisions you reviewed. Continue?"
         if not messagebox.askyesno("Confirm Reconcile", summary, parent=self):
             return
-        self._run_worker(lambda: execute_workflow(self.plan, SyncMode.RECONCILE, direction, backup, decisions=decisions))
+        self._run_worker(lambda: execute_workflow(self.plan, SyncMode.RECONCILE, self._direction(), backup, decisions=decisions))
 
     def _execute_mirror(self) -> None:
         try:

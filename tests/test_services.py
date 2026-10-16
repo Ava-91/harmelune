@@ -36,7 +36,7 @@ def libraries(tmp_path: Path, monkeypatch):
     a.mkdir()
     b.mkdir()
     write_wav(a / "Only in A.wav")
-    write_wav(b / "Only in B.wav")
+    write_wav(b / "Only in B.wav", frames=81)
     return a, b
 
 
