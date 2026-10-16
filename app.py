@@ -17,6 +17,7 @@ from harmelune.health import build_health_report
 from harmelune.matcher import build_plan
 from harmelune.models import SyncMode, SyncPlan
 from harmelune.operation_journal import JournalCorruptError, OperationJournal
+from harmelune.profiles import ProfileStore, ProfileStoreError
 from harmelune.playlist import inspect_playlist, suggest_replacements
 from harmelune.mirror import build_mirror_preview, execute_mirror
 from harmelune.path_safety import validate_backup_root, validate_library_pair
@@ -179,6 +180,7 @@ class HarmeluneApp(tk.Tk):
         self.health_button.pack(side="left", padx=(7, 0))
         self.playlist_button = ttk.Button(advanced, text="Check playlist…", command=self.check_playlist)
         self.playlist_button.pack(side="left", padx=(7, 0))
+        ttk.Button(advanced, text="Profiles…", command=self.open_profiles).pack(side="left", padx=(7, 0))
         ttk.Button(advanced, text="Clear result filter", command=lambda: self.filter_results("all")).pack(side="right")
         results = ttk.LabelFrame(frame, text="03  RESULTS", padding=8)
         results.pack(fill="both", expand=True)
@@ -822,6 +824,97 @@ class HarmeluneApp(tk.Tk):
             + "\n\nThis check is read-only. Review suggested replacements before making changes.",
             parent=self,
         )
+
+    def open_profiles(self) -> None:
+        store = ProfileStore(default_config_dir() / "profiles.json")
+        try:
+            store.names()
+        except ProfileStoreError as exc:
+            messagebox.showerror("Profiles need inspection", str(exc), parent=self)
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("Harmelune · Synchronization profiles")
+        dialog.geometry("560x440")
+        dialog.minsize(420, 320)
+        dialog.transient(self)
+        self._configure_dialog_theme(dialog)
+        root = ttk.Frame(dialog, padding=14)
+        root.pack(fill="both", expand=True)
+        ttk.Label(root, text="Synchronization profiles", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(root, text="Profiles save settings only; selecting one never starts a sync.", style="Muted.TLabel").pack(anchor="w", pady=(0, 8))
+        listing = tk.Listbox(root, background="#10131B", foreground="#E8EAF2", selectbackground="#565078", height=12)
+        listing.pack(fill="both", expand=True)
+        def refresh(selected: str | None = None) -> None:
+            listing.delete(0, "end")
+            current_names = store.names()
+            for name in current_names:
+                listing.insert("end", name)
+            if selected in current_names:
+                index = current_names.index(selected)
+                listing.selection_set(index)
+                listing.activate(index)
+        def selected_name() -> str | None:
+            selection = listing.curselection()
+            return str(listing.get(selection[0])) if selection else None
+        def save_current() -> None:
+            name = simpledialog.askstring("Save profile", "Profile name:", parent=dialog)
+            if name is None:
+                return
+            current = Settings(
+                library_a=self.library_a_var.get().strip(),
+                library_b=self.library_b_var.get().strip(),
+                master=self.master_var.get(),
+                sync_mode=self.mode_var.get(),
+                backup_location=self.backup_var.get().strip(),
+                fuzzy_threshold=self.settings.fuzzy_threshold,
+                conflict_defaults=dict(self.settings.conflict_defaults),
+                appearance=self.settings.appearance,
+            )
+            try:
+                store.save(name, current)
+            except (OSError, ValueError, ProfileStoreError) as exc:
+                messagebox.showerror("Profile not saved", str(exc), parent=dialog)
+                return
+            refresh(name)
+        def load_selected() -> None:
+            name = selected_name()
+            if not name:
+                messagebox.showinfo("Choose a profile", "Select a profile to load.", parent=dialog)
+                return
+            try:
+                settings = store.load(name)
+                self.settings_store.save(settings)
+            except (OSError, ValueError, ProfileStoreError, KeyError) as exc:
+                messagebox.showerror("Profile could not be loaded", str(exc), parent=dialog)
+                return
+            self.settings = settings
+            self.library_a_var.set(settings.library_a)
+            self.library_b_var.set(settings.library_b)
+            self.master_var.set(settings.master or "library_a")
+            self.mode_var.set(settings.sync_mode)
+            self.backup_var.set(settings.backup_location)
+            self.status_var.set(f"Loaded profile: {name}. Compare libraries again before applying changes.")
+            self._invalidate_scan()
+            dialog.destroy()
+        def delete_selected() -> None:
+            name = selected_name()
+            if not name:
+                return
+            if not messagebox.askyesno("Delete profile", f"Delete profile {name!r}? This does not delete music files.", parent=dialog):
+                return
+            try:
+                store.delete(name)
+            except (OSError, ValueError, ProfileStoreError, KeyError) as exc:
+                messagebox.showerror("Profile could not be deleted", str(exc), parent=dialog)
+                return
+            refresh()
+        buttons = ttk.Frame(root)
+        buttons.pack(fill="x", pady=(8, 0))
+        ttk.Button(buttons, text="Save current…", command=save_current).pack(side="left")
+        ttk.Button(buttons, text="Load selected", command=load_selected, style="Primary.TButton").pack(side="left", padx=(6, 0))
+        ttk.Button(buttons, text="Delete selected", command=delete_selected).pack(side="left", padx=(6, 0))
+        ttk.Button(buttons, text="Close", command=dialog.destroy).pack(side="right")
+        refresh()
 
     def export_report(self) -> None:
         if not self.last_report:
