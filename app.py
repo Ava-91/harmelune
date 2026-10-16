@@ -445,12 +445,22 @@ class HarmeluneApp(tk.Tk):
         self.status_var.set("Scanning Library A… cancellation is available between library scans.")
         def worker() -> None:
             try:
-                result_a = scan_library(library_a, "a")
+                result_a = scan_library(
+                    library_a,
+                    "a",
+                    progress=lambda count: self.after(0, lambda count=count: self.status_var.set(f"Scanning Library A… {count} audio file(s) processed.")),
+                    cancel=self.cancel_scan_event.is_set,
+                )
                 if self.cancel_scan_event.is_set():
                     self.after(0, self._scan_cancelled)
                     return
                 self.after(0, lambda: self.status_var.set("Library A scanned. Scanning Library B…"))
-                result_b = scan_library(library_b, "b")
+                result_b = scan_library(
+                    library_b,
+                    "b",
+                    progress=lambda count: self.after(0, lambda count=count: self.status_var.set(f"Scanning Library B… {count} audio file(s) processed.")),
+                    cancel=self.cancel_scan_event.is_set,
+                )
                 if self.cancel_scan_event.is_set():
                     self.after(0, self._scan_cancelled)
                     return
