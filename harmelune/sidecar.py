@@ -1,0 +1,254 @@
+"""Restricted JSONL bridge for the desktop UI.
+
+Only read-only discovery commands are exposed in this initial protocol version.
+Standard output is reserved for one JSON object per line; diagnostics go to
+standard error. The desktop frontend cannot ask this process to execute shell
+commands or arbitrary Python code.
+"""
+from __future__ import annotations
+
+import json
+import sys
+import traceback
+from pathlib import Path
+from uuid import uuid4
+
+from .services import ScanBundle, scan_libraries
+
+PROTOCOL_VERSION = 1
+MAX_REQUEST_BYTES = 1_048_576
+PAGE_SIZE = 100
+MAX_PAGE_SIZE = 200
+_PLANS: dict[str, tuple[ScanBundle, list[dict[str, object]]]] = {}
+
+
+class ProtocolError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _write(payload: dict[str, object]) -> None:
+    sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+
+def _error(request_id: object, code: str, message: str) -> None:
+    _write({
+        "version": PROTOCOL_VERSION,
+        "id": request_id if isinstance(request_id, str) else None,
+        "type": "error",
+        "ok": False,
+        "error": {"code": code, "message": message},
+    })
+
+
+def _track(track) -> dict[str, object]:
+    return {
+        "path": str(track.path),
+        "name": track.path.name,
+        "title": track.display_title,
+        "artist": track.display_artist,
+        "album": track.display_album,
+        "duration": track.duration,
+        "size": track.size,
+        "side": track.side,
+        "sha256": track.file_hash,
+        "artwork_count": track.artwork_count,
+    }
+
+
+def _rows(bundle: ScanBundle) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for match in bundle.plan.matches:
+        if not match.confirmed:
+            category, label = "fuzzy", "Uncertain match"
+        elif match.metadata_conflict or match.artwork_conflict:
+            category, label = "conflicts", "Conflict"
+        else:
+            category, label = "exact", "Confirmed match"
+        rows.append({
+            "category": category,
+            "label": label,
+            "a": _track(match.library_a),
+            "b": _track(match.library_b),
+            "confidence": match.confidence,
+            "confirmed": match.confirmed,
+            "metadata_conflict": match.metadata_conflict,
+            "artwork_conflict": match.artwork_conflict,
+            "reasons": list(match.reasons),
+        })
+    for track in bundle.plan.library_a_only:
+        rows.append({"category": "a_only", "label": "Only in Library A", "a": _track(track), "b": None})
+    for track in bundle.plan.library_b_only:
+        rows.append({"category": "b_only", "label": "Only in Library B", "a": None, "b": _track(track)})
+    return rows
+
+
+def _summary(bundle: ScanBundle, rows: list[dict[str, object]]) -> dict[str, object]:
+    counts = {key: 0 for key in ("exact", "fuzzy", "conflicts", "a_only", "b_only")}
+    for row in rows:
+        category = row.get("category")
+        if category in counts:
+            counts[str(category)] += 1
+    return {
+        "counts": counts,
+        "library_a": str(bundle.library_a),
+        "library_b": str(bundle.library_b),
+        "tracks_a": len(bundle.scan_a.tracks),
+        "tracks_b": len(bundle.scan_b.tracks),
+        "errors_a": list(bundle.scan_a.errors),
+        "errors_b": list(bundle.scan_b.errors),
+        "enumeration_complete_a": bundle.scan_a.enumeration_complete,
+        "enumeration_complete_b": bundle.scan_b.enumeration_complete,
+        "unsupported_audio_a": bundle.scan_a.unsupported_audio_files,
+        "unsupported_audio_b": bundle.scan_b.unsupported_audio_files,
+        "safe_to_preview": (
+            not bundle.scan_a.errors and not bundle.scan_b.errors
+            and bundle.scan_a.enumeration_complete and bundle.scan_b.enumeration_complete
+        ),
+    }
+
+
+def _require_string(params: dict[str, object], name: str) -> str:
+    value = params.get(name)
+    if not isinstance(value, str) or not value.strip():
+        raise ProtocolError("INVALID_ARGUMENT", f"{name} must be a non-empty string.")
+    if len(value) > 32768:
+        raise ProtocolError("INVALID_ARGUMENT", f"{name} is too long.")
+    return value.strip()
+
+
+def _page(rows: list[dict[str, object]], params: dict[str, object]) -> dict[str, object]:
+    offset = params.get("offset", 0)
+    limit = params.get("limit", PAGE_SIZE)
+    query = params.get("query", "")
+    category = params.get("category", "all")
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise ProtocolError("INVALID_ARGUMENT", "offset must be a non-negative integer.")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_PAGE_SIZE:
+        raise ProtocolError("INVALID_ARGUMENT", f"limit must be between 1 and {MAX_PAGE_SIZE}.")
+    if not isinstance(query, str):
+        raise ProtocolError("INVALID_ARGUMENT", "query must be a string.")
+    if not isinstance(category, str) or category not in {"all", "exact", "fuzzy", "conflicts", "a_only", "b_only"}:
+        raise ProtocolError("INVALID_ARGUMENT", "category is not supported.")
+    needle = query.casefold().strip()
+    filtered = []
+    for row in rows:
+        if category != "all" and row.get("category") != category:
+            continue
+        if needle and needle not in json.dumps(row, ensure_ascii=False).casefold():
+            continue
+        filtered.append(row)
+    return {
+        "rows": filtered[offset:offset + limit],
+        "offset": offset,
+        "limit": limit,
+        "total": len(filtered),
+        "has_more": offset + limit < len(filtered),
+    }
+
+
+def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
+    if not isinstance(request, dict):
+        raise ProtocolError("INVALID_REQUEST", "Each JSONL request must be an object.")
+    request_id = request.get("id")
+    if not isinstance(request_id, str) or not request_id or len(request_id) > 128:
+        raise ProtocolError("INVALID_REQUEST", "id must be a non-empty string of at most 128 characters.")
+    version = request.get("version")
+    if version != PROTOCOL_VERSION or isinstance(version, bool):
+        raise ProtocolError("UNSUPPORTED_VERSION", f"Supported protocol version is {PROTOCOL_VERSION}.")
+    command = request.get("command")
+    params = request.get("params", {})
+    if not isinstance(params, dict):
+        raise ProtocolError("INVALID_ARGUMENT", "params must be an object.")
+
+    if command in {"hello", "ping"}:
+        result: dict[str, object] = {
+            "engine": "harmelune-python",
+            "protocol_version": PROTOCOL_VERSION,
+            "capabilities": ["scan", "list_tracks", "shutdown"],
+            "read_only": True,
+        }
+        return ({"version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True, "result": result}, False)
+
+    if command == "scan":
+        library_a = _require_string(params, "library_a")
+        library_b = _require_string(params, "library_b")
+        threshold = params.get("fuzzy_threshold", 0.88)
+        if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not 0 <= threshold <= 1:
+            raise ProtocolError("INVALID_ARGUMENT", "fuzzy_threshold must be a number from 0 to 1.")
+        def progress(side: str, visited: int) -> None:
+            emit_progress({
+                "version": PROTOCOL_VERSION, "id": request_id, "type": "progress",
+                "event": "scan_progress", "side": side, "visited": visited,
+            })
+        bundle = scan_libraries(library_a, library_b, fuzzy_threshold=float(threshold), progress=progress)
+        if bundle is None:
+            raise ProtocolError("SCAN_CANCELLED", "Scan was cancelled before comparison completed.")
+        plan_id = uuid4().hex
+        rows = _rows(bundle)
+        _PLANS[plan_id] = (bundle, rows)
+        return ({
+            "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
+            "result": {
+                "plan_id": plan_id,
+                "summary": _summary(bundle, rows),
+                "page": _page(rows, {"offset": 0, "limit": PAGE_SIZE}),
+            },
+        }, False)
+
+    if command == "list_tracks":
+        plan_id = _require_string(params, "plan_id")
+        stored = _PLANS.get(plan_id)
+        if stored is None:
+            raise ProtocolError("PLAN_NOT_FOUND", "This scan is no longer available. Scan both libraries again.")
+        return ({
+            "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
+            "result": _page(stored[1], params),
+        }, False)
+
+    if command == "shutdown":
+        return ({
+            "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
+            "result": {"stopped": True},
+        }, True)
+
+    raise ProtocolError("UNKNOWN_COMMAND", "Supported commands are hello, ping, scan, list_tracks, and shutdown.")
+
+
+def main() -> int:
+    while True:
+        raw = sys.stdin.buffer.readline(MAX_REQUEST_BYTES + 1)
+        if not raw:
+            return 0
+        if len(raw) > MAX_REQUEST_BYTES:
+            while raw and not raw.endswith(b"\n"):
+                raw = sys.stdin.buffer.readline(MAX_REQUEST_BYTES + 1)
+            _error(None, "REQUEST_TOO_LARGE", "JSONL request exceeded the 1 MiB limit.")
+            continue
+        try:
+            request = json.loads(raw.decode("utf-8"))
+            request_id = request.get("id") if isinstance(request, dict) else None
+            response, should_stop = _handle(request, lambda event: _write(event))
+            _write(response)
+            if should_stop:
+                return 0
+        except UnicodeDecodeError:
+            _error(None, "INVALID_ENCODING", "Requests must be UTF-8.")
+        except json.JSONDecodeError:
+            _error(None, "INVALID_JSON", "Request line is not valid JSON.")
+        except ProtocolError as exc:
+            request_id = request.get("id") if isinstance(request, dict) else None
+            _error(request_id, exc.code, str(exc))
+        except (OSError, ValueError) as exc:
+            request_id = request.get("id") if isinstance(request, dict) else None
+            _error(request_id, "REQUEST_FAILED", str(exc))
+        except Exception as exc:  # Fail one request without corrupting the JSONL stream.
+            request_id = request.get("id") if isinstance(request, dict) else None
+            traceback.print_exc(file=sys.stderr)
+            _error(request_id, "INTERNAL_ERROR", "The Python engine failed while processing the request.")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -33,6 +33,9 @@ jobs:
       - name: Run tests
         run: python -m pytest -q
 
+      - name: Build Python sidecar
+        run: python -m PyInstaller --clean --noconfirm harmelune-sidecar.spec
+
       - name: Build Windows application
         run: python -m PyInstaller --clean --noconfirm harmelune.spec
 
