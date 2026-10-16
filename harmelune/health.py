@@ -45,8 +45,8 @@ def _library_health(scan: ScanResult) -> LibraryHealth:
     missing_artwork = sum(track.artwork_count == 0 for track in scan.tracks)
     incomplete_metadata = count - complete
     unsupported_audio = scan.unsupported_audio_files
-    check_errors = tuple(error for error in scan.errors if error.startswith("Could not enumerate "))
-    check_complete = scan.enumeration_complete and not check_errors
+    check_errors = tuple(scan.errors)
+    check_complete = scan.enumeration_complete and not scan.errors
     hashes: dict[str, list[str]] = defaultdict(list)
     for track in scan.tracks:
         if track.file_hash:
