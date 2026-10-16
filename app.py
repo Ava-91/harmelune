@@ -139,11 +139,21 @@ class HarmeluneApp(tk.Tk):
         ttk.Button(advanced, text="Clear result filter", command=lambda: self.filter_results("all")).pack(side="right")
         results = ttk.LabelFrame(frame, text="03  RESULTS", padding=8)
         results.pack(fill="both", expand=True)
-        self.tree = ttk.Treeview(results, columns=("category", "count", "details"), show="headings", height=10)
+        result_table = ttk.Frame(results)
+        result_table.pack(fill="both", expand=True)
+        self.tree = ttk.Treeview(result_table, columns=("category", "count", "details"), show="headings", height=10, selectmode="browse")
         for column, title, width in (("category", "Category", 180), ("count", "Count", 70), ("details", "Details", 640)):
             self.tree.heading(column, text=title)
-            self.tree.column(column, width=width, anchor="w")
-        self.tree.pack(fill="both", expand=True)
+            self.tree.column(column, width=width, minwidth=70, anchor="w")
+        result_y = ttk.Scrollbar(result_table, orient="vertical", command=self.tree.yview)
+        result_x = ttk.Scrollbar(result_table, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=result_y.set, xscrollcommand=result_x.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        result_y.grid(row=0, column=1, sticky="ns")
+        result_x.grid(row=1, column=0, sticky="ew")
+        result_table.rowconfigure(0, weight=1)
+        result_table.columnconfigure(0, weight=1)
+        self.tree.bind("<Return>", lambda _event: self._show_selected_result_details())
         progress_row = ttk.Frame(frame)
         progress_row.pack(fill="x", pady=(6, 0))
         self.progress = ttk.Progressbar(progress_row, mode="indeterminate", style="Horizontal.TProgressbar")
@@ -155,6 +165,14 @@ class HarmeluneApp(tk.Tk):
         self.bind("<Control-p>", lambda _event: self.dry_run())
         self.bind("<Control-h>", lambda _event: self.show_health())
         self.bind("<Escape>", lambda _event: self.cancel_scan() if self.scan_active else None)
+
+    def _show_selected_result_details(self) -> None:
+        selection = self.tree.selection()
+        if not selection:
+            return
+        values = self.tree.item(selection[0], "values")
+        if len(values) >= 3:
+            messagebox.showinfo(str(values[0]), str(values[2]), parent=self)
 
     def _path_row(self, parent: ttk.Frame, label: str, variable: tk.StringVar, browse_title: str = "Select music library") -> None:
         row = ttk.Frame(parent)
@@ -415,7 +433,7 @@ class HarmeluneApp(tk.Tk):
                 plan = build_plan(result_a, result_b, threshold=self.settings.fuzzy_threshold)
                 self.after(0, lambda: self._show_scan(library_a, library_b, result_a, result_b, plan))
             except Exception as exc:
-                self.after(0, lambda: self._scan_failed(exc))
+                self.after(0, lambda error=exc: self._scan_failed(error))
         threading.Thread(target=worker, daemon=True).start()
 
     def _show_scan(self, library_a: Path, library_b: Path, result_a, result_b, plan: SyncPlan) -> None:
@@ -668,12 +686,13 @@ class HarmeluneApp(tk.Tk):
 
     def _run_worker(self, work) -> None:
         self._set_busy(True)
+        self.status_var.set("Working… cancellation is disabled during file changes so transaction rollback remains protected.")
         def worker() -> None:
             try:
                 report = work()
                 self.after(0, lambda: self._execution_done(report))
             except Exception as exc:
-                self.after(0, lambda: self._execution_failed(exc))
+                self.after(0, lambda error=exc: self._execution_failed(error))
         threading.Thread(target=worker, daemon=True).start()
 
     def _execution_done(self, report: ExecutionReport) -> None:
