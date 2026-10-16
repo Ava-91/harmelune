@@ -66,16 +66,19 @@ def scan_library(
         return result
 
     processed = 0
-    error_count_before = len(result.errors)
+    visited = 0
     for path in _walk_files(root, result.errors, cancel):
         if cancel and cancel():
             if not result.errors or result.errors[-1] != "Scan cancelled by user":
                 result.errors.append("Scan cancelled by user")
             break
+        visited += 1
         suffix = path.suffix.lower()
         if suffix not in AUDIO_EXTENSIONS:
             if suffix in AUDIO_LIKE_EXTENSIONS:
                 result.unsupported_audio_files += 1
+            if progress:
+                progress(visited)
             continue
         processed += 1
         try:
@@ -100,16 +103,12 @@ def scan_library(
         except Exception as exc:
             result.errors.append(f"Could not parse {path}: {exc}")
         if progress:
-            progress(processed)
+            progress(visited)
 
     result.enumeration_complete = not any(
         error == "Scan cancelled by user" or error.startswith("Could not enumerate ")
         for error in result.errors
     )
-    if len(result.errors) > error_count_before:
-        result.enumeration_complete = result.enumeration_complete and not any(
-            error.startswith("Could not enumerate ") for error in result.errors
-        )
     return result
 
 
