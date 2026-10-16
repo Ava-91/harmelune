@@ -21,6 +21,7 @@ from harmelune.metadata import MetadataRepairError, inspect_metadata, repair_met
 from harmelune.models import SyncMode, SyncPlan
 from harmelune.operation_journal import JournalCorruptError, OperationJournal
 from harmelune.profiles import ProfileStore, ProfileStoreError
+from harmelune.relink import relink_settings, unavailable_libraries
 from harmelune.playlist import inspect_playlist, suggest_replacements
 from harmelune.mirror import build_mirror_preview, execute_mirror
 from harmelune.path_safety import validate_backup_root, validate_library_pair
@@ -188,6 +189,7 @@ class HarmeluneApp(tk.Tk):
         ttk.Button(advanced, text="Repair metadata…", command=self.open_metadata_repair).pack(side="left", padx=(7, 0))
         ttk.Button(advanced, text="Profiles…", command=self.open_profiles).pack(side="left", padx=(7, 0))
         ttk.Button(advanced, text="Artwork manager…", command=self.open_artwork_manager).pack(side="left", padx=(7, 0))
+        ttk.Button(advanced, text="Relink missing libraries…", command=self.relink_libraries).pack(side="left", padx=(7, 0))
         ttk.Button(advanced, text="Clear result filter", command=lambda: self.filter_results("all")).pack(side="right")
         results = ttk.LabelFrame(frame, text="03  RESULTS", padding=8)
         results.pack(fill="both", expand=True)
@@ -897,6 +899,52 @@ class HarmeluneApp(tk.Tk):
         refresh()
         search.focus_set()
         ttk.Button(root, text="Close", command=dialog.destroy).pack(anchor="e", pady=(8, 0))
+
+    def relink_libraries(self) -> None:
+        current_a = self.library_a_var.get().strip()
+        current_b = self.library_b_var.get().strip()
+        missing = unavailable_libraries(current_a, current_b)
+        if not missing:
+            messagebox.showinfo(
+                "Libraries are available",
+                "Both configured library folders are accessible. Use the Library A/B folder pickers to change a path intentionally.",
+                parent=self,
+            )
+            return
+        candidates = {"library_a": current_a, "library_b": current_b}
+        for key in missing:
+            label = "Library A" if key == "library_a" else "Library B"
+            other_key = "library_b" if key == "library_a" else "library_a"
+            other_path = Path(candidates[other_key]).expanduser() if candidates[other_key] else Path.home()
+            initial = other_path.parent if other_path.is_dir() else Path.home()
+            chosen = filedialog.askdirectory(
+                title=f"Locate replacement folder for {label}",
+                initialdir=str(initial),
+                mustexist=True,
+            )
+            if not chosen:
+                return
+            candidates[key] = chosen
+        try:
+            updated = relink_settings(self.settings, candidates["library_a"], candidates["library_b"])
+            self.settings_store.save(updated)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror(
+                "Libraries could not be relinked",
+                f"The saved paths were not changed. Choose two distinct, accessible library roots.\n\n{exc}",
+                parent=self,
+            )
+            return
+        self.settings = updated
+        self.library_a_var.set(updated.library_a)
+        self.library_b_var.set(updated.library_b)
+        self._invalidate_scan()
+        self.status_var.set("Library paths updated. Run Compare libraries again; no music files were changed.")
+        messagebox.showinfo(
+            "Libraries relinked",
+            "The replacement paths were validated and saved. Run Compare libraries again to rebuild the plan. No music files were changed.",
+            parent=self,
+        )
 
     def open_artwork_manager(self) -> None:
         selected_audio = filedialog.askopenfilename(
