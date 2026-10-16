@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from harmelune.health import build_health_report
-from harmelune.models import Match, ScanResult, SyncPlan, Track
+from harmelune.models import Match, ScanResult, SyncPlan, Track\nfrom harmelune.scanner import scan_library
 
 
 def scan(side: str, *tracks: Track, errors: list[str] | None = None) -> ScanResult:
@@ -47,15 +47,19 @@ def test_plan_conflict_and_fuzzy_counts_are_reported():
     assert report.plan.unresolved_conflicts == 1
 
 
-def test_health_counts_unsupported_audio_like_extensions(tmp_path: Path):
-    from harmelune.models import ScanResult
-
+def test_health_counts_unsupported_audio_like_extensions_from_scan_inventory(tmp_path: Path):
     (tmp_path / "album.aiff").write_bytes(b"not scanned as a supported format")
     (tmp_path / "notes.txt").write_text("not an audio format", encoding="utf-8")
-    report = build_health_report(
-        ScanResult(side="a", root=tmp_path),
-        ScanResult(side="b", root=tmp_path / "empty"),
-    )
+    scan_a = scan_library(tmp_path, "a")
+    report = build_health_report(scan_a, ScanResult(side="b", root=tmp_path / "empty"))
 
     assert report.library_a.unsupported_audio_files == 1
     assert report.library_b.unsupported_audio_files == 0
+
+
+def test_health_report_marks_scan_errors_as_incomplete():
+    report = build_health_report(scan("a", errors=["Could not read unreadable.mp3"]), scan("b"))
+
+    assert report.library_a.health_check_complete is False
+    assert report.library_a.health_check_errors == ("Could not read unreadable.mp3",)
+    assert report.library_b.health_check_complete is True
