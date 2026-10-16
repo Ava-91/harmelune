@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import tempfile
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -56,10 +57,7 @@ def _restore_from_backup(library: Path, backup: Path) -> None:
 
     # Stage a complete copy before touching the live library. This reduces (but cannot
     # eliminate) the risk of a partial restore if the filesystem fails mid-replacement.
-    staging = library.parent / f".{library.name}.harmelune-rollback-staging"
-    if staging.exists():
-        shutil.rmtree(staging)
-    staging.mkdir(parents=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{library.name}.harmelune-rollback-", dir=library.parent))
     try:
         for child in backup.iterdir():
             if child.name == MANIFEST_NAME:
