@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -48,6 +49,9 @@ class HarmeluneApp(tk.Tk):
         self.scan_errors = 0
         self.cancel_scan_event = threading.Event()
         self.scan_active = False
+        self.busy_started_at: float | None = None
+        self.busy_clock_after: str | None = None
+        self.elapsed_var = tk.StringVar(value="")
         self.library_a_var = tk.StringVar(value=self.settings.library_a)
         self.library_b_var = tk.StringVar(value=self.settings.library_b)
         self.master_var = tk.StringVar(value=self.settings.master or "library_a")
@@ -158,6 +162,7 @@ class HarmeluneApp(tk.Tk):
         progress_row.pack(fill="x", pady=(6, 0))
         self.progress = ttk.Progressbar(progress_row, mode="indeterminate", style="Horizontal.TProgressbar")
         self.progress.pack(side="left", fill="x", expand=True)
+        ttk.Label(progress_row, textvariable=self.elapsed_var, style="Muted.TLabel", width=8, anchor="e").pack(side="left", padx=8)
         self.cancel_button = ttk.Button(progress_row, text="Cancel scan", command=self.cancel_scan, state="disabled")
         self.cancel_button.pack(side="left", padx=(8, 0))
         ttk.Label(frame, textvariable=self.status_var, style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
@@ -286,10 +291,28 @@ class HarmeluneApp(tk.Tk):
         self.scan_button.configure(state="disabled" if busy else "normal")
         if busy:
             self.progress.start(12)
+            self.busy_started_at = time.monotonic()
+            self._tick_busy_clock()
         else:
             self.progress.stop()
+            self.busy_started_at = None
+            if self.busy_clock_after is not None:
+                try:
+                    self.after_cancel(self.busy_clock_after)
+                except tk.TclError:
+                    pass
+                self.busy_clock_after = None
+            self.elapsed_var.set("")
         self.cancel_button.configure(state="normal" if busy and cancellable_scan else "disabled")
         self._update_controls(busy)
+
+    def _tick_busy_clock(self) -> None:
+        if self.busy_started_at is None:
+            return
+        elapsed = max(0, int(time.monotonic() - self.busy_started_at))
+        minutes, seconds = divmod(elapsed, 60)
+        self.elapsed_var.set(f"{minutes:02d}:{seconds:02d}")
+        self.busy_clock_after = self.after(1000, self._tick_busy_clock)
 
     def cancel_scan(self) -> None:
         if not self.scan_active:
