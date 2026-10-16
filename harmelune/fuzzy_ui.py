@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .ui_theme import configure_theme
 
 import tkinter as tk
 from tkinter import ttk
@@ -14,26 +15,18 @@ class FuzzyReviewDialog(tk.Toplevel):
         super().__init__(parent)
         self.title("Review fuzzy matches")
         self.geometry("1040x690")
+        self.minsize(640, 440)
         self.minsize(900,600)
         self.transient(parent)
-        try:
-            ttk.Style(self).theme_use("clam")
-            style = ttk.Style(self)
-            style.configure(".", background="#10131B", foreground="#E7EAF4", font=("Segoe UI", 10))
-            style.configure("TFrame", background="#10131B")
-            style.configure("TLabel", background="#10131B", foreground="#DCE1F0")
-            style.configure("TLabelframe", background="#10131B", foreground="#B7C0FF")
-            style.configure("TLabelframe.Label", background="#10131B", foreground="#B7C0FF")
-            style.configure("TButton", background="#252B40", foreground="#E7EAF4", padding=(10, 7))
-            self.configure(background="#10131B")
-        except tk.TclError:
-            pass
+        configure_theme(self, dialog=True)
         self.grab_set()
         self.matches = matches
         self.index = 0
         self.decisions: dict[str, bool] = {}
         self.result: dict[str, bool] | None = None
         self._build()
+        self.bind("<Escape>", lambda _event: self.cancel())
+        self.bind("<Control-w>", lambda _event: self.cancel())
         self._show_current()
 
     def _build(self) -> None:
