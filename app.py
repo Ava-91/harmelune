@@ -448,7 +448,7 @@ class HarmeluneApp(tk.Tk):
                 result_a = scan_library(
                     library_a,
                     "a",
-                    progress=lambda count: self.after(0, lambda count=count: self.status_var.set(f"Scanning Library A… {count} audio file(s) processed.")),
+                    progress=lambda count: self.after(0, lambda count=count: self.status_var.set(f"Scanning Library A… {count} file(s) visited.")),
                     cancel=self.cancel_scan_event.is_set,
                 )
                 if self.cancel_scan_event.is_set():
@@ -458,7 +458,7 @@ class HarmeluneApp(tk.Tk):
                 result_b = scan_library(
                     library_b,
                     "b",
-                    progress=lambda count: self.after(0, lambda count=count: self.status_var.set(f"Scanning Library B… {count} audio file(s) processed.")),
+                    progress=lambda count: self.after(0, lambda count=count: self.status_var.set(f"Scanning Library B… {count} file(s) visited.")),
                     cancel=self.cancel_scan_event.is_set,
                 )
                 if self.cancel_scan_event.is_set():
