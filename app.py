@@ -327,7 +327,7 @@ class HarmeluneApp(tk.Tk):
         self.status_var.set("Scan cancelled at a safe boundary. No library files were changed.")
 
     def _update_controls(self, busy: bool = False) -> None:
-        has_plan = self.plan is not None
+        has_plan = self.plan is not None and self.scan_errors == 0 and bool(self.scan_a and self.scan_a.enumeration_complete) and bool(self.scan_b and self.scan_b.enumeration_complete)
         fuzzy = has_plan and any(not match.confirmed for match in self.plan.matches)
         conflicts = has_plan and any(match.metadata_conflict or match.artwork_conflict for match in self.plan.matches)
         backup_ready = bool(self.backup_var.get().strip())
@@ -448,7 +448,7 @@ class HarmeluneApp(tk.Tk):
                 result_a = scan_library(
                     library_a,
                     "a",
-                    progress=lambda count: self.after(0, lambda count=count: self.status_var.set(f"Scanning Library A… {count} audio file(s) processed.")),
+                    progress=lambda count: self.after(0, lambda count=count: self.status_var.set(f"Scanning Library A… {count} file(s) visited.")),
                     cancel=self.cancel_scan_event.is_set,
                 )
                 if self.cancel_scan_event.is_set():
@@ -458,7 +458,7 @@ class HarmeluneApp(tk.Tk):
                 result_b = scan_library(
                     library_b,
                     "b",
-                    progress=lambda count: self.after(0, lambda count=count: self.status_var.set(f"Scanning Library B… {count} audio file(s) processed.")),
+                    progress=lambda count: self.after(0, lambda count=count: self.status_var.set(f"Scanning Library B… {count} file(s) visited.")),
                     cancel=self.cancel_scan_event.is_set,
                 )
                 if self.cancel_scan_event.is_set():
@@ -482,7 +482,10 @@ class HarmeluneApp(tk.Tk):
         self.review_choices = {}
         self._refresh_health()
         self._set_busy(False)
-        self.status_var.set(f"Scan complete — {len(result_a.tracks)} + {len(result_b.tracks)} tracks. Nothing was changed.")
+        if self.scan_errors or not result_a.enumeration_complete or not result_b.enumeration_complete:
+            self.status_var.set(f"Scan incomplete — {self.scan_errors} issue(s). Review errors and rescan before preview/apply. Nothing was changed.")
+        else:
+            self.status_var.set(f"Scan complete — {len(result_a.tracks)} + {len(result_b.tracks)} tracks. Nothing was changed.")
 
     def _scan_failed(self, exc: Exception) -> None:
         """Surface scan worker exceptions and restore a usable UI state."""

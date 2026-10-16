@@ -63,7 +63,28 @@ def _load_manifest(backup: Path) -> tuple[str, dict[str, dict[str, int | str]]]:
         raise BackupVerificationError(f"Backup manifest is missing: {manifest_path}")
     try:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-        return str(payload["backup_id"]), payload["files"]
+        if not isinstance(payload, dict) or payload.get("format") != 1:
+            raise ValueError("Unsupported manifest format")
+        backup_id = payload.get("backup_id")
+        files = payload.get("files")
+        if not isinstance(backup_id, str) or not backup_id or not isinstance(files, dict):
+            raise ValueError("Invalid backup identity or file map")
+        for relative, entry in files.items():
+            relative_path = Path(relative)
+            if (
+                not isinstance(relative, str) or not relative
+                or relative_path.is_absolute()
+                or ".." in relative_path.parts
+                or relative_path.name == MANIFEST_NAME
+                or not isinstance(entry, dict)
+                or not isinstance(entry.get("size"), int) or entry["size"] < 0
+                or not isinstance(entry.get("modified_ns"), int)
+                or not isinstance(entry.get("sha256"), str)
+                or len(entry["sha256"]) != 64
+                or any(char not in "0123456789abcdef" for char in entry["sha256"].lower())
+            ):
+                raise ValueError("Invalid manifest file entry")
+        return backup_id, files
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise BackupVerificationError(f"Backup manifest is invalid: {manifest_path}") from exc
 
@@ -79,7 +100,7 @@ def _write_manifest(root: Path, backup_id: str, entries: dict[str, dict[str, int
 
 
 def verify_backup_contents(backup: Path) -> BackupInfo:
-    """Verify a backup against its own manifest without requiring the original source."""
+    """Check backup integrity against its co-located manifest; this does not prove authenticity."""
     backup = backup.resolve()
     backup_id, expected = _load_manifest(backup)
     actual = _manifest_for(backup)
@@ -92,7 +113,7 @@ def verify_backup_contents(backup: Path) -> BackupInfo:
 
 
 def verify_backup(source: Path, backup: Path) -> BackupInfo:
-    """Verify a backup against the source using file sets, sizes, mtimes, and SHA-256."""
+    """Compare backup integrity with the source using file sets, sizes, mtimes, and SHA-256."""
     source = source.resolve()
     backup = backup.resolve()
     backup_id, entries = _load_manifest(backup)

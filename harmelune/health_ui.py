@@ -48,6 +48,7 @@ class HealthDashboard(tk.Toplevel):
         a_artwork = f"{a.artwork_tracks} ({a.artwork_coverage_pct:.1f}%)" if a.track_count else "0 (N/A — empty)"
         b_artwork = f"{b.artwork_tracks} ({b.artwork_coverage_pct:.1f}%)" if b.track_count else "0 (N/A — empty)"
         rows = (
+            ("Health check completeness", "Complete" if a.health_check_complete else "INCOMPLETE", "Complete" if b.health_check_complete else "INCOMPLETE"),
             ("Tracks scanned", a.track_count, b.track_count),
             ("Unreadable / scan errors", a.unreadable_files, b.unreadable_files),
             ("Complete title + artist + album", a_metadata, b_metadata),
@@ -62,7 +63,11 @@ class HealthDashboard(tk.Toplevel):
             tree.insert("", "end", values=row)
         ttk.Separator(root).pack(fill="x", pady=12)
         ttk.Label(root, text=f"Plan review: {plan.unresolved_fuzzy_matches} uncertain match(es) · {plan.unresolved_conflicts} conflict(s)", style="Section.TLabel").pack(anchor="w")
-        ttk.Label(root, text="Duplicate detection uses exact file hashes; different encodings of the same song may not be grouped. Unsupported-format counts cover common audio-like extensions that this scanner does not process.", style="Muted.TLabel", wraplength=760).pack(anchor="w", pady=(6, 12))
+        ttk.Label(root, text="Duplicate detection uses exact file hashes; different encodings of the same song may not be grouped. Unsupported-format counts cover common audio-like extensions that this scanner does not process.", style="Muted.TLabel", wraplength=760).pack(anchor="w", pady=(6, 6))
+        errors = [("Library A", a.health_check_errors), ("Library B", b.health_check_errors)]
+        visible_errors = [f"{name}: {message}" for name, items in errors for message in items[:3]]
+        if visible_errors:
+            ttk.Label(root, text="Health results may be incomplete: " + " · ".join(visible_errors), style="Muted.TLabel", wraplength=760).pack(anchor="w", pady=(0, 8))
         ttk.Button(root, text="Close", command=self.destroy, style="Primary.TButton").pack(anchor="e")
 
 

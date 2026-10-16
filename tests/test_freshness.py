@@ -83,3 +83,28 @@ def test_missing_fingerprint_metadata_blocks_execution(tmp_path: Path):
     plan = SyncPlan(library_a_root=a, library_b_root=b)
     with pytest.raises(StalePlanError, match="fingerprints"):
         validate_plan_freshness(plan)
+
+
+
+def test_same_size_content_change_with_restored_timestamp_invalidates_plan(tmp_path: Path):
+    a, b = make_libraries(tmp_path)
+    target = a / "one.mp3"
+    plan = make_plan(a, b)
+    before = target.stat()
+    target.write_bytes(b"two")  # Same length as the original bytes.
+    os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    with pytest.raises(StalePlanError, match="content changed"):
+        validate_plan_freshness(plan)
+
+
+def test_same_size_content_change_with_restored_timestamp_invalidates_plan(tmp_path: Path):
+    a, b = make_libraries(tmp_path)
+    target = a / "one.mp3"
+    plan = make_plan(a, b)
+    before = target.stat()
+    target.write_bytes(b"two")
+    os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    with pytest.raises(StalePlanError, match="content changed"):
+        validate_plan_freshness(plan)

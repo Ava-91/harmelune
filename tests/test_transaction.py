@@ -114,3 +114,18 @@ def test_rollback_failure_is_reported(tmp_path: Path, monkeypatch):
     assert result.status == "PARTIAL"
     assert result.rolled_back is False
     assert result.rollback_failures
+
+
+def test_rollback_failure_includes_manual_recovery_backup_path(tmp_path: Path, monkeypatch):
+    library = tmp_path / "Library"
+    library.mkdir()
+    (library / "file.txt").write_text("original")
+    backup = make_backup(library, tmp_path)
+    source = tmp_path / "source.txt"
+    source.write_text("changed")
+    monkeypatch.setattr("harmelune.transaction._restore_from_backup", lambda *_: (_ for _ in ()).throw(OSError("drive disconnected")))
+    monkeypatch.setattr("harmelune.transaction.shutil.copy2", lambda *_: (_ for _ in ()).throw(OSError("copy failed")))
+    result = execute_transaction([FileOperation(OperationKind.REPLACE, source, library / "file.txt")], {library: backup})
+    assert result.status == "PARTIAL"
+    assert str(backup) in result.rollback_failures[0]
+    assert "MANUAL RECOVERY REQUIRED" in result.rollback_failures[0]

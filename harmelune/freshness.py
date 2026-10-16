@@ -8,12 +8,16 @@ class StalePlanError(RuntimeError):
     """Raised when a synchronization plan no longer describes the libraries."""
 
 
-def _lightweight_fingerprint(fingerprint: dict[str, FileState]) -> dict[str, tuple[int, int]]:
-    return {path: (state.size, state.modified_ns) for path, state in fingerprint.items()}
+def _fingerprint_signature(fingerprint: dict[str, FileState]) -> dict[str, tuple[int, int, str | None]]:
+    """Include content hashes: size and mtime alone are not a freshness guarantee."""
+    return {
+        path: (state.size, state.modified_ns, state.file_hash)
+        for path, state in fingerprint.items()
+    }
 
 
 def validate_plan_freshness(plan: SyncPlan) -> None:
-    """Block execution unless both scanned libraries still match their plan fingerprints."""
+    """Block execution unless both libraries still match their scanned content fingerprints."""
     if not plan.library_a_root or not plan.library_b_root:
         raise StalePlanError("The synchronization plan has no library roots. Scan both libraries again.")
     if plan.fingerprint_a is None or plan.fingerprint_b is None:
@@ -23,9 +27,9 @@ def validate_plan_freshness(plan: SyncPlan) -> None:
         current_a = current_fingerprint(plan.library_a_root)
         current_b = current_fingerprint(plan.library_b_root)
     except (OSError, ValueError) as exc:
-        raise StalePlanError(f"A library is unavailable. Scan both libraries again. ({exc})") from exc
+        raise StalePlanError(f"A library is unavailable or could not be fingerprinted. Scan both libraries again. ({exc})") from exc
 
-    if _lightweight_fingerprint(plan.fingerprint_a) != _lightweight_fingerprint(current_a):
-        raise StalePlanError("Library A changed after scanning. Scan both libraries again before applying the plan.")
-    if _lightweight_fingerprint(plan.fingerprint_b) != _lightweight_fingerprint(current_b):
-        raise StalePlanError("Library B changed after scanning. Scan both libraries again before applying the plan.")
+    if _fingerprint_signature(plan.fingerprint_a) != _fingerprint_signature(current_a):
+        raise StalePlanError("Library A content changed after scanning. Scan both libraries again before applying the plan.")
+    if _fingerprint_signature(plan.fingerprint_b) != _fingerprint_signature(current_b):
+        raise StalePlanError("Library B content changed after scanning. Scan both libraries again before applying the plan.")

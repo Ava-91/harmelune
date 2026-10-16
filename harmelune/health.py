@@ -21,6 +21,8 @@ class LibraryHealth:
     missing_artwork_tracks: int = 0
     incomplete_metadata_tracks: int = 0
     unsupported_audio_files: int = 0
+    health_check_complete: bool = True
+    health_check_errors: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,12 +44,9 @@ def _library_health(scan: ScanResult) -> LibraryHealth:
     artwork = sum(track.artwork_count > 0 for track in scan.tracks)
     missing_artwork = sum(track.artwork_count == 0 for track in scan.tracks)
     incomplete_metadata = count - complete
-    audio_like_extensions = AUDIO_EXTENSIONS | {".aiff", ".aif", ".ape", ".alac", ".dsf", ".dff", ".ac3", ".mid", ".midi", ".amr", ".3gp"}
-    unsupported_audio = 0
-    try:
-        unsupported_audio = sum(1 for path in scan.root.rglob("*") if path.is_file() and path.suffix.lower() in audio_like_extensions - AUDIO_EXTENSIONS)
-    except OSError:
-        unsupported_audio = 0
+    unsupported_audio = scan.unsupported_audio_files
+    check_errors = tuple(scan.errors)
+    check_complete = scan.enumeration_complete and not scan.errors
     hashes: dict[str, list[str]] = defaultdict(list)
     for track in scan.tracks:
         if track.file_hash:
@@ -66,6 +65,8 @@ def _library_health(scan: ScanResult) -> LibraryHealth:
         missing_artwork_tracks=missing_artwork,
         incomplete_metadata_tracks=incomplete_metadata,
         unsupported_audio_files=unsupported_audio,
+        health_check_complete=check_complete,
+        health_check_errors=check_errors,
     )
 
 

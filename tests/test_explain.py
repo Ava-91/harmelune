@@ -130,7 +130,7 @@ def test_fuzzy_match_explanation_includes_every_scoring_component():
     assert match.confirmed is False
     assert explanation.identity == "Fuzzy match — review required"
     for reason in (
-        "Conservative fuzzy similarity:",
+        "Heuristic similarity score (not a probability):",
         "Title similarity:",
         "Filename similarity:",
         "Artist similarity:",
