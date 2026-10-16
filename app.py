@@ -22,6 +22,8 @@ from harmelune.scanner import scan_library
 from harmelune.settings import Settings, SettingsStore
 from harmelune.sync import execute_safe
 from harmelune.ui_state import comparison_counts, filter_comparison_rows, workflow_step
+from harmelune.health_ui import open_health_dashboard
+from harmelune.ui_theme import configure_theme
 
 
 class HarmeluneApp(tk.Tk):
@@ -44,6 +46,8 @@ class HarmeluneApp(tk.Tk):
         self.preview_ready = False
         self.last_dry_run = None
         self.scan_errors = 0
+        self.cancel_scan_event = threading.Event()
+        self.scan_active = False
         self.library_a_var = tk.StringVar(value=self.settings.library_a)
         self.library_b_var = tk.StringVar(value=self.settings.library_b)
         self.master_var = tk.StringVar(value=self.settings.master or "library_a")
@@ -82,32 +86,7 @@ class HarmeluneApp(tk.Tk):
         self.status_var.set("Setup saved — ready to scan. Nothing has been changed in either library.")
 
     def _configure_theme(self) -> None:
-        style = ttk.Style(self)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-        self.configure(background="#10131B")
-        style.configure(".", background="#10131B", foreground="#E7EAF4", font=("Segoe UI", 10))
-        style.configure("TFrame", background="#10131B")
-        style.configure("TLabel", background="#10131B", foreground="#DCE1F0")
-        style.configure("Muted.TLabel", background="#10131B", foreground="#9AA4BB")
-        style.configure("Title.TLabel", background="#10131B", foreground="#F4F5FC", font=("Segoe UI", 22, "bold"))
-        style.configure("Section.TLabel", background="#10131B", foreground="#B7C0FF", font=("Segoe UI", 10, "bold"))
-        style.configure("TButton", background="#252B40", foreground="#E7EAF4", padding=(10, 7), borderwidth=0)
-        style.map("TButton", background=[("active", "#343D59"), ("disabled", "#1A1F2C")], foreground=[("disabled", "#6F7890")])
-        style.configure("Primary.TButton", background="#B7C0FF", foreground="#171A29", font=("Segoe UI", 10, "bold"), padding=(13, 8))
-        style.map("Primary.TButton", background=[("active", "#D0D5FF"), ("disabled", "#373B50")])
-        style.configure("Danger.TButton", background="#6B303E", foreground="#FFF0F2", padding=(10, 7))
-        style.map("Danger.TButton", background=[("active", "#843D4C")])
-        style.configure("TEntry", fieldbackground="#1A1F2C", foreground="#E7EAF4", insertcolor="#E7EAF4", bordercolor="#343B52", padding=6)
-        style.configure("TCombobox", fieldbackground="#1A1F2C", background="#252B40", foreground="#E7EAF4", arrowcolor="#B7C0FF", padding=5)
-        style.map("TCombobox", fieldbackground=[("readonly", "#1A1F2C")], foreground=[("readonly", "#E7EAF4")])
-        style.configure("Treeview", background="#171B27", fieldbackground="#171B27", foreground="#DCE1F0", rowheight=29, borderwidth=0)
-        style.configure("Treeview.Heading", background="#252B40", foreground="#B7C0FF", font=("Segoe UI", 9, "bold"), padding=7)
-        style.map("Treeview", background=[("selected", "#343D59")], foreground=[("selected", "#FFFFFF")])
-        style.configure("TLabelframe", background="#10131B", foreground="#B7C0FF")
-        style.configure("TLabelframe.Label", background="#10131B", foreground="#B7C0FF", font=("Segoe UI", 10, "bold"))
+        configure_theme(self)
 
     def _build_ui(self) -> None:
         self._configure_theme()
@@ -155,6 +134,8 @@ class HarmeluneApp(tk.Tk):
         self.backups_a_button.pack(side="left", padx=(7, 0))
         self.backups_b_button = ttk.Button(advanced, text="Backups B · Manage", command=lambda: self.open_backups(self.library_b_var), state="normal" if self.library_b_var.get().strip() else "disabled")
         self.backups_b_button.pack(side="left", padx=(7, 0))
+        self.health_button = ttk.Button(advanced, text="Library health…", command=self.show_health, state="disabled")
+        self.health_button.pack(side="left", padx=(7, 0))
         ttk.Button(advanced, text="Clear result filter", command=lambda: self.filter_results("all")).pack(side="right")
         results = ttk.LabelFrame(frame, text="03  RESULTS", padding=8)
         results.pack(fill="both", expand=True)
@@ -163,7 +144,17 @@ class HarmeluneApp(tk.Tk):
             self.tree.heading(column, text=title)
             self.tree.column(column, width=width, anchor="w")
         self.tree.pack(fill="both", expand=True)
-        ttk.Label(frame, textvariable=self.status_var, style="Muted.TLabel").pack(anchor="w", pady=(8, 0))
+        progress_row = ttk.Frame(frame)
+        progress_row.pack(fill="x", pady=(6, 0))
+        self.progress = ttk.Progressbar(progress_row, mode="indeterminate", style="Horizontal.TProgressbar")
+        self.progress.pack(side="left", fill="x", expand=True)
+        self.cancel_button = ttk.Button(progress_row, text="Cancel scan", command=self.cancel_scan, state="disabled")
+        self.cancel_button.pack(side="left", padx=(8, 0))
+        ttk.Label(frame, textvariable=self.status_var, style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
+        self.bind("<F5>", lambda _event: self.scan())
+        self.bind("<Control-p>", lambda _event: self.dry_run())
+        self.bind("<Control-h>", lambda _event: self.show_health())
+        self.bind("<Escape>", lambda _event: self.cancel_scan() if self.scan_active else None)
 
     def _path_row(self, parent: ttk.Frame, label: str, variable: tk.StringVar, browse_title: str = "Select music library") -> None:
         row = ttk.Frame(parent)
@@ -273,9 +264,26 @@ class HarmeluneApp(tk.Tk):
             raise ValueError("Choose a backup location before applying a modifying mode.")
         return validate_backup_root(value, (self.library_a_root, self.library_b_root)) if self.library_a_root and self.library_b_root else Path(value).expanduser()
 
-    def _set_busy(self, busy: bool) -> None:
+    def _set_busy(self, busy: bool, *, cancellable_scan: bool = False) -> None:
         self.scan_button.configure(state="disabled" if busy else "normal")
+        if busy:
+            self.progress.start(12)
+        else:
+            self.progress.stop()
+        self.cancel_button.configure(state="normal" if busy and cancellable_scan else "disabled")
         self._update_controls(busy)
+
+    def cancel_scan(self) -> None:
+        if not self.scan_active:
+            return
+        self.cancel_scan_event.set()
+        self.cancel_button.configure(state="disabled")
+        self.status_var.set("Cancellation requested — finishing the current library scan safely…")
+
+    def _scan_cancelled(self) -> None:
+        self.scan_active = False
+        self._set_busy(False)
+        self.status_var.set("Scan cancelled at a safe boundary. No library files were changed.")
 
     def _update_controls(self, busy: bool = False) -> None:
         has_plan = self.plan is not None
@@ -287,7 +295,9 @@ class HarmeluneApp(tk.Tk):
         mode = self.mode_var.get()
         mode_blocked = (mode == SyncMode.MIRROR and bool(fuzzy)) or (mode == SyncMode.RECONCILE and (bool(fuzzy) or conflict_review_incomplete))
         can_apply = has_plan and backup_ready and self.preview_ready and not mode_blocked
-        for button, enabled in ((self.review_conflicts_button, conflicts), (self.review_fuzzy_button, fuzzy), (self.dry_run_button, has_plan), (self.execute_button, can_apply), (self.export_button, self.last_report is not None)):
+        for button, enabled in ((self.review_conflicts_button, conflicts), (self.review_fuzzy_button, fuzzy), (self.dry_run_button, has_plan), (self.execute_button, can_apply), (self.export_button, self.last_report is not None), (getattr(self, "health_button", None), self.health is not None)):
+            if button is None:
+                continue
             button.configure(state="normal" if enabled and not busy else "disabled")
         if hasattr(self, "backups_a_button"):
             self._update_backup_buttons()
@@ -306,7 +316,10 @@ class HarmeluneApp(tk.Tk):
                 category, label = "conflicts", "Conflict"
             else:
                 category, label = "exact", "Exact / confirmed match"
-            details = f"A: {match.library_a.display_artist} — {match.library_a.display_title}  ↔  B: {match.library_b.display_artist} — {match.library_b.display_title}; {explanation.confidence:.0%}; {', '.join(explanation.reasons[:2])}"
+            score_label = f"engine score {explanation.confidence:.0%} (not a guarantee)" if not match.confirmed else f"confidence {explanation.confidence:.0%}"
+            evidence = "; ".join(explanation.reasons) or "No additional evidence recorded"
+            conflicts_text = f"; conflicts: {', '.join(explanation.conflicts)}" if explanation.conflicts else ""
+            details = f"A: {match.library_a.display_artist} — {match.library_a.display_title} ↔ B: {match.library_b.display_artist} — {match.library_b.display_title}; {explanation.identity}; {score_label}; evidence: {evidence}{conflicts_text}"
             rows.append((category, label, "1", details))
         for track in self.plan.library_a_only:
             rows.append(("a_only", "Only in Library A", "1", f"{track.display_artist} — {track.display_title} · {track.path}"))
@@ -336,6 +349,14 @@ class HarmeluneApp(tk.Tk):
         self.tree.tag_configure("conflicts", foreground="#F49BA6")
         self.tree.tag_configure("exact", foreground="#8BD8C2")
         self._update_workflow()
+        if hasattr(self, "health_button"):
+            self.health_button.configure(state="normal")
+
+    def show_health(self) -> None:
+        if self.health is None:
+            messagebox.showinfo("Library health", "Compare both libraries first to calculate health metrics.", parent=self)
+            return
+        open_health_dashboard(self, self.health)
 
     def filter_results(self, category: str) -> None:
         self.active_filter = category
@@ -376,12 +397,21 @@ class HarmeluneApp(tk.Tk):
         except (OSError, ValueError) as exc:
             messagebox.showerror("Invalid libraries", str(exc), parent=self)
             return
-        self._set_busy(True)
-        self.status_var.set("Scanning both libraries…")
+        self.cancel_scan_event.clear()
+        self.scan_active = True
+        self._set_busy(True, cancellable_scan=True)
+        self.status_var.set("Scanning Library A… cancellation is available between library scans.")
         def worker() -> None:
             try:
                 result_a = scan_library(library_a, "a")
+                if self.cancel_scan_event.is_set():
+                    self.after(0, self._scan_cancelled)
+                    return
+                self.after(0, lambda: self.status_var.set("Library A scanned. Scanning Library B…"))
                 result_b = scan_library(library_b, "b")
+                if self.cancel_scan_event.is_set():
+                    self.after(0, self._scan_cancelled)
+                    return
                 plan = build_plan(result_a, result_b, threshold=self.settings.fuzzy_threshold)
                 self.after(0, lambda: self._show_scan(library_a, library_b, result_a, result_b, plan))
             except Exception as exc:
@@ -389,6 +419,7 @@ class HarmeluneApp(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _show_scan(self, library_a: Path, library_b: Path, result_a, result_b, plan: SyncPlan) -> None:
+        self.scan_active = False
         self.plan, self.scan_a, self.scan_b = plan, result_a, result_b
         self.preview_ready = False
         self.last_dry_run = None
@@ -403,6 +434,7 @@ class HarmeluneApp(tk.Tk):
 
     def _scan_failed(self, exc: Exception) -> None:
         """Surface scan worker exceptions and restore a usable UI state."""
+        self.scan_active = False
         self.plan = None
         self.scan_a = None
         self.scan_b = None
@@ -476,50 +508,77 @@ class HarmeluneApp(tk.Tk):
     def _show_preview_dialog(self, result, mode: str) -> None:
         dialog = tk.Toplevel(self)
         dialog.title("Synchronization plan preview")
-        dialog.geometry("920x650")
-        dialog.minsize(720, 480)
+        dialog.geometry("1040x700")
+        dialog.minsize(640, 420)
         dialog.transient(self)
         self._configure_dialog_theme(dialog)
         root = ttk.Frame(dialog, padding=16)
         root.pack(fill="both", expand=True)
         ttk.Label(root, text="Preview · no files changed", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(root, text=f"Mode: {mode.upper()}  ·  {len(result.operations)} operation(s)  ·  {len(result.skipped)} skipped  ·  {len(result.blocked)} blocked", style="Section.TLabel").pack(anchor="w", pady=(4, 8))
+        counts = {kind: 0 for kind in ("COPY", "REPLACE", "DELETE", "SKIPPED", "BLOCKED")}
+        rows = []
+        for operation in result.operations:
+            raw_kind = getattr(operation, "kind", getattr(operation, "action", "operation"))
+            kind = getattr(raw_kind, "value", str(raw_kind)).upper()
+            counts[kind] = counts.get(kind, 0) + 1
+            source = str(operation.source) if operation.source is not None else "—"
+            destination = str(operation.destination)
+            reason = {"COPY": "Missing in destination", "REPLACE": "Destination content differs", "DELETE": "Not present in master/source"}.get(kind, "Proposed operation")
+            rows.append((kind, source, destination, reason))
+        for item in result.skipped:
+            counts["SKIPPED"] += 1
+            rows.append(("SKIPPED", "—", str(item), "Already exists or explicitly skipped"))
+        for item in result.blocked:
+            counts["BLOCKED"] += 1
+            rows.append(("BLOCKED", "—", str(item), "Must be resolved before apply"))
+        ttk.Label(root, text=f"Mode: {mode.upper()}  ·  Copy {counts['COPY']}  ·  Replace {counts['REPLACE']}  ·  Delete {counts['DELETE']}  ·  Skip {counts['SKIPPED']}  ·  Blocked {counts['BLOCKED']}", style="Section.TLabel", wraplength=980).pack(anchor="w", pady=(4, 8))
         if mode == SyncMode.MIRROR:
             target = "Library B" if self.master_var.get() == "library_a" else "Library A"
-            ttk.Label(root, text=f"MIRROR WARNING: {self.master_var.get()} is the master. {target} is the target and may have files replaced or deleted.", style="Danger.TLabel", wraplength=850).pack(anchor="w", pady=(0, 8))
-        ttk.Label(root, text="Backup status: not created yet. Apply creates and verifies a backup before modifying files.", style="Muted.TLabel", wraplength=850).pack(anchor="w", pady=(0, 8))
-        content = ttk.Frame(root)
-        content.pack(fill="both", expand=True)
-        body = tk.Text(content, wrap="word", background="#171B27", foreground="#DCE1F0", insertbackground="#DCE1F0", relief="flat", padx=10, pady=10)
-        scrollbar = ttk.Scrollbar(content, orient="vertical", command=body.yview)
-        body.configure(yscrollcommand=scrollbar.set)
-        body.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        body.insert("end", "PROPOSED OPERATIONS\n" + ("=" * 70) + "\n")
-        lines = self._operation_lines(result.operations, limit=len(result.operations))
-        body.insert("end", "\n".join(lines) if lines else "No file operations are proposed.")
-        if result.skipped:
-            body.insert("end", "\n\nSKIPPED\n" + ("=" * 70) + "\n" + "\n".join(str(item) for item in result.skipped))
-        if result.blocked:
-            body.insert("end", "\n\nBLOCKED — RESOLVE BEFORE APPLY\n" + ("=" * 70) + "\n" + "\n".join(str(item) for item in result.blocked))
-        body.configure(state="disabled")
+            ttk.Label(root, text=f"MIRROR WARNING: {self.master_var.get()} is the master/source. {target} is the target and may have files replaced or deleted.", style="Danger.TLabel", wraplength=980).pack(anchor="w", pady=(0, 8))
+        ttk.Label(root, text="Backup status: not created yet. Apply creates and verifies a backup before modifying files.", style="Muted.TLabel", wraplength=980).pack(anchor="w", pady=(0, 8))
+        filter_row = ttk.Frame(root)
+        filter_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(filter_row, text="Show:").pack(side="left")
+        filter_var = tk.StringVar(value="All operations")
+        filters = ("All operations", "COPY", "REPLACE", "DELETE", "SKIPPED", "BLOCKED")
+        combo = ttk.Combobox(filter_row, textvariable=filter_var, values=filters, state="readonly", width=18)
+        combo.pack(side="left", padx=(6, 0))
+        table_frame = ttk.Frame(root)
+        table_frame.pack(fill="both", expand=True)
+        columns = ("action", "source", "destination", "reason")
+        tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
+        for column, title, width in (("action", "Action", 95), ("source", "Source", 300), ("destination", "Destination", 300), ("reason", "Why", 220)):
+            tree.heading(column, text=title)
+            tree.column(column, width=width, minwidth=80, anchor="w")
+        yscroll = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
+        xscroll = ttk.Scrollbar(table_frame, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        table_frame.rowconfigure(0, weight=1)
+        table_frame.columnconfigure(0, weight=1)
+        tree.tag_configure("DELETE", foreground="#F49BA6")
+        tree.tag_configure("BLOCKED", foreground="#F49BA6")
+        tree.tag_configure("REPLACE", foreground="#FFD080")
+        def refresh_rows(*_args) -> None:
+            tree.delete(*tree.get_children())
+            selected = filter_var.get()
+            for row in rows:
+                if selected != "All operations" and row[0] != selected:
+                    continue
+                tree.insert("", "end", values=row, tags=(row[0],))
+        combo.bind("<<ComboboxSelected>>", refresh_rows)
+        refresh_rows()
+        ttk.Label(root, text="Double-check delete/replace rows and destination paths. This preview is read-only.", style="Muted.TLabel").pack(anchor="w", pady=(8, 0))
         ttk.Button(root, text="Close preview", command=dialog.destroy, style="Primary.TButton").pack(anchor="e", pady=(10, 0))
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.bind("<Control-w>", lambda _event: dialog.destroy())
 
     def _configure_dialog_theme(self, dialog: tk.Toplevel) -> None:
+        configure_theme(dialog, dialog=True)
         style = ttk.Style(dialog)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-        style.configure(".", background="#10131B", foreground="#E7EAF4", font=("Segoe UI", 10))
-        style.configure("TFrame", background="#10131B")
-        style.configure("TLabel", background="#10131B", foreground="#DCE1F0")
-        style.configure("Muted.TLabel", background="#10131B", foreground="#9AA4BB")
-        style.configure("Title.TLabel", background="#10131B", foreground="#F4F5FC", font=("Segoe UI", 18, "bold"))
-        style.configure("Section.TLabel", background="#10131B", foreground="#B7C0FF", font=("Segoe UI", 10, "bold"))
         style.configure("Danger.TLabel", background="#10131B", foreground="#F49BA6", font=("Segoe UI", 10, "bold"))
-        style.configure("TButton", background="#252B40", foreground="#E7EAF4", padding=(10, 7))
-        style.configure("Primary.TButton", background="#B7C0FF", foreground="#171A29", font=("Segoe UI", 10, "bold"))
 
     def dry_run(self) -> None:
         if not self.plan:
