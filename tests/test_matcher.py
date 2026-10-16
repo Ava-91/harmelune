@@ -45,3 +45,28 @@ def test_renamed_metadata_with_same_filename_is_matched() -> None:
     assert len(plan.matches) == 1
     assert not plan.phone_only
     assert plan.matches[0].metadata_conflict is True
+
+
+
+def test_live_version_is_not_auto_matched_to_studio_version():
+    live = track("a", "Song Live.mp3", "Song (Live)")
+    studio = track("b", "Song.mp3", "Song")
+
+    plan = build_plan(
+        ScanResult("a", Path("a"), [live]),
+        ScanResult("b", Path("b"), [studio]),
+    )
+
+    assert not plan.matches
+    assert plan.library_a_only == [live]
+    assert plan.library_b_only == [studio]
+
+
+def test_fuzzy_match_score_is_described_as_heuristic_not_probability():
+    from harmelune.matcher import _fuzzy_reasons
+
+    left = track("a", "Song.mp3", "Song")
+    right = track("b", "Song.mp3", "Song")
+    reasons = _fuzzy_reasons(left, right, 0.91)
+
+    assert any("not a probability" in reason for reason in reasons)
