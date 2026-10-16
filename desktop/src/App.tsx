@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -34,6 +34,8 @@ function App() {
   const [summary, setSummary] = useState<ScanSummary | null>(null);
   const [rows, setRows] = useState<ComparisonRow[]>([]);
   const [totalRows, setTotalRows] = useState(0);
+  const [pageIndex, setPageIndex] = useState(0);
+  const requestSequence = useRef(0);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("all");
   const [scanning, setScanning] = useState(false);
@@ -62,18 +64,26 @@ function App() {
 
   useEffect(() => {
     if (!planId || !isTauri()) return;
+    const sequence = ++requestSequence.current;
     const timer = window.setTimeout(() => {
-      void engineRequest("list_tracks", { plan_id: planId, offset: 0, limit: 100, query, category })
+      void engineRequest("list_tracks", { plan_id: planId, offset: pageIndex * 100, limit: 100, query, category })
         .then((response) => {
+          if (sequence !== requestSequence.current) return;
           if (!response.ok) throw new Error(response.error?.message ?? "Could not load comparison rows.");
           const page = response.result as { rows: ComparisonRow[]; total: number };
           setRows(page.rows);
           setTotalRows(page.total);
+          setError("");
         })
-        .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)));
+        .catch((reason: unknown) => {
+          if (sequence === requestSequence.current) setError(reason instanceof Error ? reason.message : String(reason));
+        });
     }, 180);
-    return () => window.clearTimeout(timer);
-  }, [planId, query, category]);
+    return () => {
+      window.clearTimeout(timer);
+      requestSequence.current += 1;
+    };
+  }, [planId, query, category, pageIndex]);
 
   const chooseFolder = async (which: "a" | "b") => {
     setError("");
@@ -111,6 +121,7 @@ function App() {
       setSummary(result.summary);
       setRows(result.page.rows);
       setTotalRows(result.page.total);
+      setPageIndex(0);
       setQuery("");
       setCategory("all");
       setActive("compare");
@@ -202,9 +213,19 @@ function App() {
                 <div className="metric-card"><span>Confirmed</span><strong>{summary.counts.exact}</strong><small>matches</small></div>
                 <div className="metric-card"><span>Needs review</span><strong>{summary.counts.fuzzy + summary.counts.conflicts}</strong><small>uncertain or conflicting</small></div>
               </div>}
+              {summary && <div className="health-grid" aria-label="Library scan health">
+                <div className={summary.enumeration_complete_a && summary.errors_a.length === 0 ? "health-card healthy" : "health-card warning"}>
+                  <span>Library A health</span><strong>{summary.enumeration_complete_a && summary.errors_a.length === 0 ? "Complete scan" : "Needs attention"}</strong>
+                  <small>{summary.errors_a.length} scan error(s) · {summary.unsupported_audio_a} unsupported audio-like file(s)</small>
+                </div>
+                <div className={summary.enumeration_complete_b && summary.errors_b.length === 0 ? "health-card healthy" : "health-card warning"}>
+                  <span>Library B health</span><strong>{summary.enumeration_complete_b && summary.errors_b.length === 0 ? "Complete scan" : "Needs attention"}</strong>
+                  <small>{summary.errors_b.length} scan error(s) · {summary.unsupported_audio_b} unsupported audio-like file(s)</small>
+                </div>
+              </div>}
               <div className="table-toolbar">
-                <input aria-label="Search comparison" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search title, artist, album, or path…" disabled={!hasScan} />
-                <select aria-label="Filter category" value={category} onChange={(event) => setCategory(event.target.value)} disabled={!hasScan}>
+                <input aria-label="Search comparison" value={query} onChange={(event) => { setQuery(event.target.value); setPageIndex(0); }} placeholder="Search title, artist, album, or path…" disabled={!hasScan} />
+                <select aria-label="Filter category" value={category} onChange={(event) => { setCategory(event.target.value); setPageIndex(0); }} disabled={!hasScan}>
                   <option value="all">All categories</option><option value="exact">Confirmed</option><option value="fuzzy">Uncertain matches</option><option value="conflicts">Conflicts</option><option value="a_only">Only in A</option><option value="b_only">Only in B</option>
                 </select>
               </div>
@@ -226,7 +247,14 @@ function App() {
                 </table>
                 {!selectedRows.length && <div className="table-empty">{hasScan ? "No rows match these filters." : "Scan both libraries to see results."}</div>}
               </div>
-              <div className="table-footer"><span>{totalRows} matching row(s) · showing up to 100</span><span>{summary?.safe_to_preview ? "No scan errors detected" : "Check scan warnings before proceeding"}</span></div>
+              <div className="table-footer">
+                <span>Page {Math.min(pageIndex + 1, Math.max(1, Math.ceil(totalRows / 100)))} of {Math.max(1, Math.ceil(totalRows / 100))} · {totalRows} matching row(s)</span>
+                <div className="page-controls">
+                  <button type="button" className="secondary-button page-button" disabled={pageIndex === 0 || !hasScan} onClick={() => setPageIndex((current) => Math.max(0, current - 1))}>Previous</button>
+                  <button type="button" className="secondary-button page-button" disabled={!hasScan || pageIndex + 1 >= Math.ceil(totalRows / 100)} onClick={() => setPageIndex((current) => current + 1)}>Next</button>
+                </div>
+                <span>{summary?.safe_to_preview ? "No scan errors detected" : "Check scan warnings before proceeding"}</span>
+              </div>
               {summary && (summary.errors_a.length > 0 || summary.errors_b.length > 0) && <div className="error-notice"><strong>Scan warnings</strong><ul>{[...summary.errors_a, ...summary.errors_b].slice(0, 8).map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
             </>
           )}
