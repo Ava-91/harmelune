@@ -763,7 +763,9 @@ class HarmeluneApp(tk.Tk):
         if not destination:
             return
         try:
-            path = export_report_file(self.last_report, Path(destination))
+            target = Path(destination)
+            redact_paths = target.suffix.lower() in {".csv", ".html", ".htm"}
+            path = export_report_file(self.last_report, target, redact_paths=redact_paths)
         except (OSError, ValueError) as exc:
             messagebox.showerror("Report export failed", str(exc), parent=self)
             return
