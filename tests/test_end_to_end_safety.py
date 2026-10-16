@@ -119,7 +119,10 @@ def test_transaction_failure_restores_original_filesystem_snapshot(tmp_path: Pat
     monkeypatch.setattr(transaction.shutil, "copy2", fail_second_copy)
 
     result = execute_transaction(
-        [FileOperation(OperationKind.REPLACE, source, original)],
+        [
+            FileOperation(OperationKind.REPLACE, source, original),
+            FileOperation(OperationKind.COPY, source, library / "new.mp3"),
+        ],
         {library: backup},
     )
 
