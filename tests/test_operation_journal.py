@@ -77,4 +77,4 @@ def test_journal_payload_contains_metadata_not_file_contents(tmp_path: Path):
     store.begin("safe", affected_paths=[audio])
     payload = store.path.read_bytes()
     assert secret_audio_bytes not in payload
-    assert str(audio).encode('utf-8') in payload
+    assert str(audio) in json.loads(payload.decode('utf-8'))['operations'][0]['affected_paths']
