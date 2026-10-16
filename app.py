@@ -8,6 +8,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from harmelune.backup_ui import open_backup_manager
+from harmelune.artwork import make_image_preview, make_preview, replace_artwork
 from harmelune.direction import MasterLibrary, SyncDirection
 from harmelune.dry_run import dry_run_mirror, dry_run_reconcile, dry_run_safe
 from harmelune.execution_report import ExecutionReport, report_from_mirror, report_from_reconcile, report_from_safe
@@ -186,6 +187,7 @@ class HarmeluneApp(tk.Tk):
         ttk.Button(advanced, text="Sync history…", command=self.open_sync_history).pack(side="left", padx=(7, 0))
         ttk.Button(advanced, text="Repair metadata…", command=self.open_metadata_repair).pack(side="left", padx=(7, 0))
         ttk.Button(advanced, text="Profiles…", command=self.open_profiles).pack(side="left", padx=(7, 0))
+        ttk.Button(advanced, text="Artwork manager…", command=self.open_artwork_manager).pack(side="left", padx=(7, 0))
         ttk.Button(advanced, text="Clear result filter", command=lambda: self.filter_results("all")).pack(side="right")
         results = ttk.LabelFrame(frame, text="03  RESULTS", padding=8)
         results.pack(fill="both", expand=True)
@@ -895,6 +897,80 @@ class HarmeluneApp(tk.Tk):
         refresh()
         search.focus_set()
         ttk.Button(root, text="Close", command=dialog.destroy).pack(anchor="e", pady=(8, 0))
+
+    def open_artwork_manager(self) -> None:
+        selected_audio = filedialog.askopenfilename(
+            title="Choose an audio file",
+            filetypes=[("Supported audio", "*.mp3 *.flac *.m4a *.m4b"), ("All files", "*.*")],
+        )
+        if not selected_audio:
+            return
+        audio_path = Path(selected_audio)
+        try:
+            current_bytes = make_preview(audio_path)
+        except Exception as exc:
+            messagebox.showerror("Artwork inspection failed", str(exc), parent=self)
+            return
+        selected_image = filedialog.askopenfilename(
+            title="Choose replacement cover art",
+            filetypes=[("JPEG or PNG artwork", "*.jpg *.jpeg *.png")],
+        )
+        if not selected_image:
+            return
+        image_path = Path(selected_image)
+        proposed_preview = make_image_preview(image_path)
+        if proposed_preview is None:
+            messagebox.showerror("Artwork preview failed", "Choose a valid JPEG or PNG image.", parent=self)
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("Harmelune · Artwork manager")
+        dialog.geometry("620x390")
+        dialog.minsize(480, 340)
+        dialog.transient(self)
+        self._configure_dialog_theme(dialog)
+        root = ttk.Frame(dialog, padding=16)
+        root.pack(fill="both", expand=True)
+        ttk.Label(root, text="Review album artwork", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(root, text=str(audio_path), style="Muted.TLabel", wraplength=580).pack(anchor="w", pady=(0, 8))
+        previews = ttk.Frame(root)
+        previews.pack(fill="both", expand=True)
+        current_panel = ttk.Frame(previews, padding=6)
+        current_panel.pack(side="left", fill="both", expand=True)
+        proposed_panel = ttk.Frame(previews, padding=6)
+        proposed_panel.pack(side="left", fill="both", expand=True)
+        ttk.Label(current_panel, text="Current artwork").pack()
+        if current_bytes is None:
+            current_label = ttk.Label(current_panel, text="No embedded artwork")
+        else:
+            current_label = ttk.Label(current_panel, image=current_bytes)
+            current_label.image = current_bytes
+        current_label.pack(pady=8)
+        ttk.Label(proposed_panel, text="Proposed artwork").pack()
+        proposed_label = ttk.Label(proposed_panel, image=proposed_preview)
+        proposed_label.image = proposed_preview
+        proposed_label.pack(pady=8)
+        ttk.Label(root, text="A full-file backup is created before replacing embedded artwork.", style="Muted.TLabel").pack(anchor="w", pady=(4, 8))
+        def apply_replacement() -> None:
+            if not messagebox.askyesno(
+                "Replace embedded artwork?",
+                "Replace the embedded cover image in this audio file?\n\n"
+                "The original audio file will be backed up before any changes.",
+                parent=dialog,
+            ):
+                return
+            try:
+                backup = replace_artwork(audio_path, image_path, default_config_dir() / "artwork-backups")
+            except (OSError, ValueError, RuntimeError) as exc:
+                messagebox.showerror("Artwork replacement failed", str(exc), parent=dialog)
+                return
+            self.status_var.set(f"Artwork updated. Original file backup: {backup}")
+            messagebox.showinfo("Artwork updated", f"Cover art replaced successfully.\nOriginal file backup:\n{backup}", parent=dialog)
+            dialog.destroy()
+            self._invalidate_scan()
+        buttons = ttk.Frame(root)
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="Replace artwork…", command=apply_replacement, style="Primary.TButton").pack(side="right")
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="right", padx=(0, 8))
 
     def open_profiles(self) -> None:
         store = ProfileStore(default_config_dir() / "profiles.json")
