@@ -103,3 +103,45 @@ def test_list_tracks_rejects_unknown_scan_id(tmp_path: Path):
     messages = parse_output(completed.stdout)
     assert messages[0]["type"] == "error"
     assert messages[0]["error"]["code"] == "PLAN_NOT_FOUND"
+
+def test_page_filters_categories_and_paginates_without_losing_totals():
+    from harmelune.sidecar import _page
+
+    rows = [
+        {"category": "a_only", "label": "Only in Library A", "a": {"title": "First song"}},
+        {"category": "b_only", "label": "Only in Library B", "b": {"title": "Second song"}},
+        {"category": "a_only", "label": "Only in Library A", "a": {"title": "Third song"}},
+    ]
+
+    first = _page(rows, {"offset": 0, "limit": 2})
+    second = _page(rows, {"offset": 2, "limit": 2})
+    filtered = _page(rows, {"offset": 0, "limit": 10, "category": "a_only", "query": "song"})
+
+    assert first["total"] == 3
+    assert len(first["rows"]) == 2
+    assert first["has_more"] is True
+    assert len(second["rows"]) == 1
+    assert second["has_more"] is False
+    assert filtered["total"] == 2
+    assert all(row["category"] == "a_only" for row in filtered["rows"])
+
+
+def test_page_rejects_invalid_pagination_and_filter_values():
+    from harmelune.sidecar import ProtocolError, _page
+
+    invalid_params = (
+        {"offset": -1},
+        {"offset": True},
+        {"limit": 0},
+        {"limit": 201},
+        {"limit": False},
+        {"query": 3},
+        {"category": "delete"},
+    )
+    for params in invalid_params:
+        try:
+            _page([], params)
+        except ProtocolError as exc:
+            assert exc.code == "INVALID_ARGUMENT"
+        else:
+            raise AssertionError(f"Expected invalid arguments to be rejected: {params!r}")
