@@ -21,7 +21,7 @@ def _stats(root: Path) -> tuple[int, int]:
     count = 0
     size = 0
     for path in root.rglob("*"):
-        if path.is_file():
+        if path.is_file() and path.name != MANIFEST_NAME:
             count += 1
             try:
                 size += path.stat().st_size
