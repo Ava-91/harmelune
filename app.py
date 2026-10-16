@@ -16,6 +16,7 @@ from harmelune.health import build_health_report
 from harmelune.matcher import build_plan
 from harmelune.models import SyncMode, SyncPlan
 from harmelune.operation_journal import JournalCorruptError, OperationJournal
+from harmelune.playlist import inspect_playlist, suggest_replacements
 from harmelune.mirror import build_mirror_preview, execute_mirror
 from harmelune.path_safety import validate_backup_root, validate_library_pair
 from harmelune.reconcile import ReconcileDecision, execute_reconcile
@@ -175,6 +176,8 @@ class HarmeluneApp(tk.Tk):
         self.backups_b_button.pack(side="left", padx=(7, 0))
         self.health_button = ttk.Button(advanced, text="Library health…", command=self.show_health, state="disabled")
         self.health_button.pack(side="left", padx=(7, 0))
+        self.playlist_button = ttk.Button(advanced, text="Check playlist…", command=self.check_playlist)
+        self.playlist_button.pack(side="left", padx=(7, 0))
         ttk.Button(advanced, text="Clear result filter", command=lambda: self.filter_results("all")).pack(side="right")
         results = ttk.LabelFrame(frame, text="03  RESULTS", padding=8)
         results.pack(fill="both", expand=True)
@@ -780,6 +783,44 @@ class HarmeluneApp(tk.Tk):
         self._set_busy(False)
         self.status_var.set("Execution blocked or failed.")
         messagebox.showerror("Execution failed", str(exc), parent=self)
+
+    def check_playlist(self) -> None:
+        source = filedialog.askopenfilename(
+            title="Choose an M3U or M3U8 playlist",
+            filetypes=[("M3U playlists", "*.m3u *.m3u8"), ("All files", "*.*")],
+        )
+        if not source:
+            return
+        try:
+            report = inspect_playlist(Path(source))
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Playlist check failed", str(exc), parent=self)
+            return
+        if report.errors:
+            messagebox.showwarning("Playlist could not be fully checked", "\n".join(report.errors), parent=self)
+            return
+        candidates = []
+        for scan in (self.scan_a, self.scan_b):
+            if scan is not None:
+                candidates.extend(track.path for track in scan.tracks)
+        suggestions = suggest_replacements(report, candidates)
+        if not report.missing:
+            messagebox.showinfo("Playlist check", f"All {len(report.entries)} playlist entries resolve to existing files. No playlist changes were made.", parent=self)
+            return
+        lines = []
+        for entry in report.missing[:25]:
+            suggested = suggestions.get(entry.line_number)
+            detail = f"  → Suggested: {suggested}" if suggested else "  → No unique replacement found"
+            lines.append(f"Line {entry.line_number}: {entry.raw_path}{detail}")
+        if len(report.missing) > 25:
+            lines.append(f"... and {len(report.missing) - 25} more missing entry/entries.")
+        messagebox.showwarning(
+            "Missing playlist tracks",
+            f"{len(report.missing)} of {len(report.entries)} playlist entries are missing.\n\n"
+            + "\n".join(lines)
+            + "\n\nThis check is read-only. Review suggested replacements before making changes.",
+            parent=self,
+        )
 
     def export_report(self) -> None:
         if not self.last_report:
