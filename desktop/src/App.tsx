@@ -61,6 +61,9 @@ function App() {
   const [backupRoot, setBackupRoot] = useState("");
   const [reconcilePreview, setReconcilePreview] = useState<SafePreview | null>(null);
   const [reconcilePreviewing, setReconcilePreviewing] = useState(false);
+  const [reconcileConfirmation, setReconcileConfirmation] = useState("");
+  const [reconcileExecuting, setReconcileExecuting] = useState(false);
+  const [reconcileReport, setReconcileReport] = useState<Record<string, any> | null>(null);
   const [reviewRows, setReviewRows] = useState<ComparisonRow[]>([]);
   const [reviewPage, setReviewPage] = useState(0);
   const [reviewTotal, setReviewTotal] = useState(0);
@@ -151,6 +154,8 @@ function App() {
       setPreview(null);
       setReconcilePreview(null);
       setReconcileDecisions({});
+      setReconcileConfirmation("");
+      setReconcileReport(null);
       setSafeConfirmation("");
       setExecutionReport(null);
       setStalePlan(false);
@@ -277,6 +282,8 @@ function App() {
       return next;
     });
     setReconcilePreview(null);
+    setReconcileConfirmation("");
+    setReconcileReport(null);
     setError("");
   };
 
@@ -315,6 +322,39 @@ function App() {
     }
   };
 
+  const executeReconcile = async () => {
+    if (!planId || !summary || !reconcilePreview?.preview_token || !backupRoot.trim()) {
+      setError("Build a fresh Reconcile preview and choose a separate backup location first.");
+      return;
+    }
+    if (reconcileConfirmation !== "APPLY RECONCILE") {
+      setError('Type APPLY RECONCILE exactly to authorize the reviewed Reconcile operations.');
+      return;
+    }
+    if (reconcilePreview.status !== "SUCCESS" || reconcilePreview.blocked.length || reconcilePreview.operations.some((operation) => !["copy", "replace"].includes(operation.kind))) {
+      setError("Reconcile execution is blocked until the preview is successful, unblocked, and contains only explicit copy/replace operations.");
+      return;
+    }
+    setError("");
+    setReconcileExecuting(true);
+    try {
+      const response = await engineRequest("execute_reconcile", {
+        plan_id: planId, backup_root: backupRoot.trim(), decisions: reconcileDecisions,
+        preview_token: reconcilePreview.preview_token, confirmation: reconcileConfirmation,
+      });
+      if (!response.ok) {
+        setStalePlan(["STALE_PLAN", "PLAN_NOT_FOUND", "PREVIEW_MISMATCH"].includes(response.error?.code ?? ""));
+        throw new Error(response.error?.message ?? "Reconcile execution was blocked.");
+      }
+      setReconcileReport((response.result as Record<string, any>).execution);
+      setReconcilePreview(null);
+      setReconcileConfirmation("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setReconcileExecuting(false);
+    }
+  };
   const section = sections.find((item) => item.id === active) ?? sections[0];
   const hasScan = Boolean(planId && summary);
   const selectedRows = rows;
@@ -356,12 +396,12 @@ function App() {
               <h1>{active === "library" ? "Your music, in harmony." : section.label}</h1>
               <p className="page-subtitle">{active === "library" ? "A calmer, clearer way to compare and care for your music libraries." : section.hint + ". The existing Python engine remains authoritative."}</p>
             </div>
-            <div className="read-only-pill"><span className="status-dot muted" /> SAFE EXECUTION GATED</div>
+            <div className="read-only-pill"><span className="status-dot muted" /> SAFE + RECONCILE GATED</div>
           </div>
 
           <div className="notice" role="status">
             <div className="notice-icon" aria-hidden="true">i</div>
-            <div><strong>Safe execution is available behind an explicit safety gate</strong><p>Safe copies require a fresh preview, exact APPLY SAFE confirmation, and a verified backup outside both libraries. Reconcile execution, restore, and Mirror remain locked for separate safety reviews.</p></div>
+            <div><strong>Safe and Reconcile execution require explicit approval</strong><p>Both workflows require a fresh preview, exact typed confirmation, and verified backups outside both libraries. Reconcile applies only the saved explicit decisions. Mirror and Restore remain locked.</p></div>
           </div>
 
           {active === "library" && (
@@ -525,11 +565,34 @@ function App() {
               </div>
               <div className="reconcile-backup">
                 <label htmlFor="backup-root">Separate backup location (required)</label>
-                <input id="backup-root" value={backupRoot} onChange={(event) => { setBackupRoot(event.target.value); setReconcilePreview(null); }} placeholder="Choose a folder outside both music libraries…" />
+                <input id="backup-root" value={backupRoot} onChange={(event) => { setBackupRoot(event.target.value); setReconcilePreview(null); setReconcileConfirmation(""); setReconcileReport(null); }} placeholder="Choose a folder outside both music libraries…" />
                 <small>Preview validates this location but does not create a backup or modify any file.</small>
                 <button className="primary-button" disabled={!hasScan || !summary?.safe_to_preview || reconcilePreviewing || !isTauri()} onClick={() => void buildReconcilePreview()}>{reconcilePreviewing ? "Building Reconcile preview…" : "Build Reconcile dry run"}</button>
               </div>
-              {reconcilePreview && <PreviewPanel preview={reconcilePreview} />}
+                            {reconcilePreview && <PreviewPanel preview={reconcilePreview} />}
+              {reconcilePreview && (
+                <div className="reconcile-backup safe-execution-panel">
+                  <h3>Reconcile execution — final safety gate</h3>
+                  <p>This applies only the explicit decisions shown in this preview. Copy operations add missing files; replace operations replace the selected counterpart only after verified backups. No delete operation is permitted.</p>
+                  <label htmlFor="reconcile-confirmation">Type <strong>APPLY RECONCILE</strong> to authorize execution</label>
+                  <input id="reconcile-confirmation" value={reconcileConfirmation} onChange={(event) => setReconcileConfirmation(event.target.value)} placeholder="APPLY RECONCILE" autoComplete="off" />
+                  <button className="primary-button" disabled={!hasScan || !reconcilePreview.preview_token || reconcilePreview.status !== "SUCCESS" || reconcilePreview.blocked.length > 0 || reconcilePreview.operations.some((operation) => !["copy", "replace"].includes(operation.kind)) || !backupRoot.trim() || reconcileConfirmation !== "APPLY RECONCILE" || reconcileExecuting || !isTauri()} onClick={() => void executeReconcile()}>{reconcileExecuting ? "Creating verified backups and applying decisions…" : "Create verified backups & apply Reconcile decisions"}</button>
+                  <small>Any missing decision, changed library, changed decision, changed backup location, or altered preview blocks execution and requires a fresh preview.</small>
+                </div>
+              )}
+              {reconcileReport && (
+                <div className="preview-result execution-report">
+                  <h3>Reconcile execution report</h3>
+                  <div className="metrics-grid">
+                    <div className="metric-card"><span>Final status</span><strong>{String(reconcileReport.final_status)}</strong></div>
+                    <div className="metric-card"><span>Applied</span><strong>{Number(reconcileReport.succeeded ?? 0)}</strong></div>
+                    <div className="metric-card"><span>Skipped</span><strong>{Number(reconcileReport.skipped ?? 0)}</strong></div>
+                    <div className="metric-card"><span>Failed</span><strong>{Number(reconcileReport.failed ?? 0)}</strong></div>
+                  </div>
+                  <p>Verified backups: {(reconcileReport.backups ?? []).join(", ") || "No backup was needed because no file changes were selected."}</p>
+                  <details><summary>Full execution report</summary><pre>{JSON.stringify(reconcileReport, null, 2)}</pre></details>
+                </div>
+              )}
               {stalePlan && <div className="error-notice stale-notice"><strong>Plan is stale</strong><p>One or both libraries changed after scanning. Rescan before reviewing or previewing again.</p><button className="secondary-button" onClick={() => void scan()}>Rescan libraries</button></div>}
               {error && <div className="error-notice" role="alert">{error}</div>}
             </>
