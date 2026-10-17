@@ -405,3 +405,83 @@ def test_safe_execution_rejects_stale_plan_without_creating_backup(tmp_path: Pat
         raise AssertionError("Execution must reject a plan after either library changes.")
     assert not backup_root.exists()
     assert not (b / "Only A.wav").exists()
+
+
+def test_reconcile_execution_requires_confirmation_and_applies_only_reviewed_decisions(tmp_path: Path, monkeypatch):
+    from harmelune import sidecar
+
+    a, b = tmp_path / "Library A", tmp_path / "Library B"
+    a.mkdir(); b.mkdir()
+    write_wav(a / "Only A.wav", 80)
+    write_wav(b / "Only B.wav", 83)
+    backup_root = tmp_path / "verified-backups"
+    before_a = {p.relative_to(a).as_posix(): p.read_bytes() for p in a.rglob("*") if p.is_file()}
+    before_b = {p.relative_to(b).as_posix(): p.read_bytes() for p in b.rglob("*") if p.is_file()}
+    monkeypatch.setattr(sidecar, "_PLANS", {})
+    scan, _ = sidecar._handle(json.loads(request("scan", "scan", {"library_a": str(a), "library_b": str(b)})), lambda _event: None)
+    plan_id = scan["result"]["plan_id"]
+    decisions = {f"a-only:{a / 'Only A.wav'}": "copy_a_to_b", f"b-only:{b / 'Only B.wav'}": "copy_b_to_a"}
+    preview, _ = sidecar._handle(json.loads(request("preview", "preview_reconcile", {"plan_id": plan_id, "backup_root": str(backup_root), "decisions": decisions})), lambda _event: None)
+    assert preview["ok"] is True and preview["result"]["status"] == "SUCCESS"
+    assert preview["result"]["operation_count"] == 2
+    assert preview["result"]["mutations_enabled"] is False
+    token = preview["result"]["preview_token"]
+
+    try:
+        sidecar._handle(json.loads(request("no-confirm", "execute_reconcile", {"plan_id": plan_id, "backup_root": str(backup_root), "decisions": decisions, "preview_token": token, "confirmation": "yes"})), lambda _event: None)
+    except sidecar.ProtocolError as exc:
+        assert exc.code == "CONFIRMATION_REQUIRED"
+    else:
+        raise AssertionError("Reconcile must require exact typed confirmation.")
+    assert {p.relative_to(a).as_posix(): p.read_bytes() for p in a.rglob("*") if p.is_file()} == before_a
+    assert {p.relative_to(b).as_posix(): p.read_bytes() for p in b.rglob("*") if p.is_file()} == before_b
+    assert not backup_root.exists()
+
+    result, _ = sidecar._handle(json.loads(request("apply", "execute_reconcile", {"plan_id": plan_id, "backup_root": str(backup_root), "decisions": decisions, "preview_token": token, "confirmation": "APPLY RECONCILE"})), lambda _event: None)
+    assert result["ok"] is True
+    report = result["result"]["execution"]
+    assert report["mode"] == "reconcile" and report["final_status"] == "SUCCESS"
+    assert report["succeeded"] == 2 and report["failed"] == 0
+    assert len(report["backups"]) == 2
+    assert (b / "Only A.wav").read_bytes() == before_a["Only A.wav"]
+    assert (a / "Only B.wav").read_bytes() == before_b["Only B.wav"]
+    assert {p.relative_to(a).as_posix(): p.read_bytes() for p in a.rglob("*") if p.is_file() and p.name != ".music-sync-backup.json"} == {**before_a, "Only B.wav": before_b["Only B.wav"]}
+
+
+def test_reconcile_execution_rejects_changed_decisions_backup_path_and_stale_plan(tmp_path: Path, monkeypatch):
+    from harmelune import sidecar
+
+    a, b = tmp_path / "Library A", tmp_path / "Library B"
+    a.mkdir(); b.mkdir()
+    write_wav(a / "Only A.wav", 80)
+    write_wav(b / "Only B.wav", 83)
+    backup_root = tmp_path / "verified-backups"
+    monkeypatch.setattr(sidecar, "_PLANS", {})
+    scan, _ = sidecar._handle(json.loads(request("scan", "scan", {"library_a": str(a), "library_b": str(b)})), lambda _event: None)
+    plan_id = scan["result"]["plan_id"]
+    decisions = {f"a-only:{a / 'Only A.wav'}": "copy_a_to_b", f"b-only:{b / 'Only B.wav'}": "skip"}
+    preview, _ = sidecar._handle(json.loads(request("preview", "preview_reconcile", {"plan_id": plan_id, "backup_root": str(backup_root), "decisions": decisions})), lambda _event: None)
+    token = preview["result"]["preview_token"]
+    attempts = [
+        (decisions | {f"b-only:{b / 'Only B.wav'}": "copy_b_to_a"}, str(backup_root), token, "PREVIEW_MISMATCH"),
+        (decisions, str(a / "inside-backup"), token, "EXECUTION_BLOCKED"),
+    ]
+    for altered, backup, supplied_token, expected in attempts:
+        try:
+            sidecar._handle(json.loads(request("blocked", "execute_reconcile", {"plan_id": plan_id, "backup_root": backup, "decisions": altered, "preview_token": supplied_token, "confirmation": "APPLY RECONCILE"})), lambda _event: None)
+        except sidecar.ProtocolError as exc:
+            assert exc.code == expected
+        else:
+            raise AssertionError(f"Expected {expected} for altered decisions/backup root")
+    assert not (b / "Only A.wav").exists()
+    assert not (a / "inside-backup").exists()
+
+    write_wav(a / "added-after-preview.wav", 91)
+    try:
+        sidecar._handle(json.loads(request("stale", "execute_reconcile", {"plan_id": plan_id, "backup_root": str(backup_root), "decisions": decisions, "preview_token": token, "confirmation": "APPLY RECONCILE"})), lambda _event: None)
+    except sidecar.ProtocolError as exc:
+        assert exc.code == "STALE_PLAN"
+    else:
+        raise AssertionError("Stale Reconcile plans must not execute.")
+    assert not backup_root.exists()
+    assert not (b / "Only A.wav").exists()
