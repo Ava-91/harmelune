@@ -7,6 +7,7 @@ const sections = [
   { id: "library", label: "Library", mark: "▤", hint: "Select and scan folders" },
   { id: "compare", label: "Compare", mark: "⇄", hint: "Review library differences" },
   { id: "review", label: "Review & preview", mark: "◫", hint: "Resolve uncertain matches" },
+  { id: "mirror", label: "Mirror", mark: "⇌", hint: "Review exact changes before mirroring" },
   { id: "backups", label: "Backups & recovery", mark: "↺", hint: "Verified backups and recovery" },
   { id: "history", label: "Sync history", mark: "◷", hint: "Past operation reports" },
   { id: "health", label: "Library health", mark: "⌁", hint: "Metadata and file health" },
@@ -64,6 +65,13 @@ function App() {
   const [reconcileConfirmation, setReconcileConfirmation] = useState("");
   const [reconcileExecuting, setReconcileExecuting] = useState(false);
   const [reconcileReport, setReconcileReport] = useState<Record<string, any> | null>(null);
+  const [mirrorMasterLibrary, setMirrorMasterLibrary] = useState("library_a");
+  const [mirrorBackupRoot, setMirrorBackupRoot] = useState("");
+  const [mirrorPreview, setMirrorPreview] = useState<SafePreview | null>(null);
+  const [mirrorPreviewing, setMirrorPreviewing] = useState(false);
+  const [mirrorConfirmation, setMirrorConfirmation] = useState("");
+  const [mirrorExecuting, setMirrorExecuting] = useState(false);
+  const [mirrorReport, setMirrorReport] = useState<Record<string, any> | null>(null);
   const [reviewRows, setReviewRows] = useState<ComparisonRow[]>([]);
   const [reviewPage, setReviewPage] = useState(0);
   const [reviewTotal, setReviewTotal] = useState(0);
@@ -156,6 +164,9 @@ function App() {
       setReconcileDecisions({});
       setReconcileConfirmation("");
       setReconcileReport(null);
+      setMirrorPreview(null);
+      setMirrorConfirmation("");
+      setMirrorReport(null);
       setSafeConfirmation("");
       setExecutionReport(null);
       setStalePlan(false);
@@ -189,6 +200,9 @@ function App() {
       setReconcileDecisions({});
       setReconcileConfirmation("");
       setReconcileReport(null);
+      setMirrorPreview(null);
+      setMirrorConfirmation("");
+      setMirrorReport(null);
       setSafeConfirmation("");
       setExecutionReport(null);
       setStalePlan(false);
@@ -357,6 +371,81 @@ function App() {
       setReconcileExecuting(false);
     }
   };
+  const buildMirrorPreview = async () => {
+    if (!planId || !summary) {
+      setError("Scan both libraries before building a Mirror preview.");
+      return;
+    }
+    if (!summary.safe_to_preview) {
+      setError("Mirror is blocked because one or both scans have errors or are incomplete.");
+      return;
+    }
+    if (!mirrorBackupRoot.trim()) {
+      setError("Choose a separate backup location outside both libraries first.");
+      return;
+    }
+    setError("");
+    setStalePlan(false);
+    setMirrorPreviewing(true);
+    setMirrorPreview(null);
+    setMirrorConfirmation("");
+    setMirrorReport(null);
+    try {
+      const response = await engineRequest("preview_mirror", {
+        plan_id: planId,
+        master_library: mirrorMasterLibrary,
+        backup_root: mirrorBackupRoot.trim(),
+      });
+      if (!response.ok) {
+        setStalePlan(["STALE_PLAN", "PLAN_NOT_FOUND"].includes(response.error?.code ?? ""));
+        throw new Error(response.error?.message ?? "Could not build the Mirror preview.");
+      }
+      setMirrorPreview(response.result as unknown as SafePreview);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setMirrorPreviewing(false);
+    }
+  };
+
+  const executeMirror = async () => {
+    if (!planId || !summary || !mirrorPreview?.preview_token || !mirrorBackupRoot.trim()) {
+      setError("Build a fresh Mirror preview and choose a separate backup location first.");
+      return;
+    }
+    if (mirrorConfirmation !== "MIRROR") {
+      setError('Type MIRROR exactly to authorize the destructive Mirror operation.');
+      return;
+    }
+    if (mirrorPreview.status !== "SUCCESS" || mirrorPreview.blocked.length ||
+        mirrorPreview.operations.some((operation) => !["copy", "replace", "delete"].includes(operation.kind))) {
+      setError("Mirror execution is blocked until the preview is successful, unblocked, and contains only supported operations.");
+      return;
+    }
+    setError("");
+    setMirrorExecuting(true);
+    try {
+      const response = await engineRequest("execute_mirror", {
+        plan_id: planId,
+        master_library: mirrorMasterLibrary,
+        backup_root: mirrorBackupRoot.trim(),
+        preview_token: mirrorPreview.preview_token,
+        confirmation: mirrorConfirmation,
+      });
+      if (!response.ok) {
+        setStalePlan(["STALE_PLAN", "PLAN_NOT_FOUND", "PREVIEW_MISMATCH"].includes(response.error?.code ?? ""));
+        throw new Error(response.error?.message ?? "Mirror execution was blocked.");
+      }
+      setMirrorReport((response.result as Record<string, any>).execution);
+      setMirrorPreview(null);
+      setMirrorConfirmation("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setMirrorExecuting(false);
+    }
+  };
+
   const section = sections.find((item) => item.id === active) ?? sections[0];
   const hasScan = Boolean(planId && summary);
   const selectedRows = rows;
@@ -600,7 +689,101 @@ function App() {
             </>
           )}
 
-          {active !== "library" && active !== "compare" && active !== "review" && (
+          {active === "mirror" && (
+            <>
+              <div className="section-title-row">
+                <div><h2>Mirror — destructive synchronization</h2><p>Make the destination match the selected master. Every copy, replacement, and deletion must be visible before approval.</p></div>
+                <span className="subtle-label">EXPLICIT DELETION GATE</span>
+              </div>
+              <div className="preview-controls">
+                <label htmlFor="mirror-master">Master library</label>
+                <select id="mirror-master" value={mirrorMasterLibrary} onChange={(event) => {
+                  setMirrorMasterLibrary(event.target.value);
+                  setMirrorPreview(null);
+                  setMirrorConfirmation("");
+                  setMirrorReport(null);
+                }}>
+                  <option value="library_a">Library A → Library B (B becomes mirror)</option>
+                  <option value="library_b">Library B → Library A (A becomes mirror)</option>
+                </select>
+              </div>
+              <div className="reconcile-backup">
+                <label htmlFor="mirror-backup-root">Separate backup location — outside BOTH libraries</label>
+                <input id="mirror-backup-root" value={mirrorBackupRoot} onChange={(event) => {
+                  setMirrorBackupRoot(event.target.value);
+                  setMirrorPreview(null);
+                  setMirrorConfirmation("");
+                  setMirrorReport(null);
+                }} placeholder="Choose a separate backup drive/folder…" />
+                <small>Mirror cannot execute with an incomplete scan, stale plan, changed backup location, or changed preview.</small>
+                <button className="primary-button" disabled={!hasScan || !summary?.safe_to_preview || !mirrorBackupRoot.trim() || mirrorPreviewing || !isTauri()} onClick={() => void buildMirrorPreview()}>
+                  {mirrorPreviewing ? "Building Mirror preview…" : "Build Mirror dry run"}
+                </button>
+              </div>
+              {!hasScan && <div className="table-empty">Scan both libraries before planning Mirror.</div>}
+              {summary && !summary.safe_to_preview && <div className="error-notice">Mirror blocked: both scans must finish without errors before a preview can be approved.</div>}
+              {mirrorPreview && (
+                <div className="preview-result">
+                  <div className="metrics-grid">
+                    <div className="metric-card"><span>All operations</span><strong>{mirrorPreview.operation_count}</strong><small>full list below</small></div>
+                    <div className="metric-card"><span>Deletions</span><strong>{mirrorPreview.operations.filter((operation) => operation.kind === "delete").length}</strong><small>destination files removed</small></div>
+                    <div className="metric-card"><span>Replacements</span><strong>{mirrorPreview.operations.filter((operation) => operation.kind === "replace").length}</strong><small>destination files replaced</small></div>
+                    <div className="metric-card"><span>Preview status</span><strong>{mirrorPreview.status}</strong><small>{mirrorPreview.blocked.length} blocker(s)</small></div>
+                  </div>
+                  <div className="error-notice">
+                    <strong>Review every planned mutation</strong>
+                    <p>Nothing has changed yet. The complete operation list is shown here, not truncated. Read the delete and replacement destinations carefully.</p>
+                  </div>
+                  <h3 className="preview-list-title">Exact planned operations ({mirrorPreview.operations.length})</h3>
+                  {mirrorPreview.operations.length ? (
+                    <ul className="preview-list">{mirrorPreview.operations.map((operation, index) => (
+                      <li key={index}>
+                        <span className="operation-kind">{operation.kind.toUpperCase()}</span>
+                        <span className="operation-path">{operation.source ?? "—"}<span>→ {operation.destination}</span></span>
+                      </li>
+                    ))}</ul>
+                  ) : <div className="table-empty">No operations are planned; Mirror has nothing to change.</div>}
+                  {mirrorPreview.blocked.length > 0 && <div className="error-notice"><strong>Blocked items — execution unavailable</strong><ul>{mirrorPreview.blocked.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
+                  {mirrorPreview.operations.some((operation) => operation.kind === "delete") && (
+                    <div className="error-notice">
+                      <strong>Exact deletion list ({mirrorPreview.operations.filter((operation) => operation.kind === "delete").length})</strong>
+                      <ul>{mirrorPreview.operations.filter((operation) => operation.kind === "delete").map((operation, index) => <li key={index}><code>{operation.destination}</code></li>)}</ul>
+                    </div>
+                  )}
+                  {mirrorPreview.operations.some((operation) => operation.kind === "replace") && (
+                    <div className="notice"><div className="notice-icon">!</div><div><strong>Exact replacement list ({mirrorPreview.operations.filter((operation) => operation.kind === "replace").length})</strong><ul>{mirrorPreview.operations.filter((operation) => operation.kind === "replace").map((operation, index) => <li key={index}><code>{operation.destination}</code> ← {operation.source}</li>)}</ul></div></div>
+                  )}
+                  <div className="reconcile-backup safe-execution-panel">
+                    <h3>Mirror execution — final destructive gate</h3>
+                    <p>Before any destination changes, Harmelune creates and verifies a backup of the destination library. The Python transaction engine rechecks freshness and performs the approved plan.</p>
+                    <label htmlFor="mirror-confirmation">Type <strong>MIRROR</strong> exactly to authorize every listed operation, including deletions</label>
+                    <input id="mirror-confirmation" value={mirrorConfirmation} onChange={(event) => setMirrorConfirmation(event.target.value)} placeholder="MIRROR" autoComplete="off" />
+                    <button className="primary-button" disabled={!hasScan || !mirrorPreview.preview_token || mirrorPreview.status !== "SUCCESS" || mirrorPreview.blocked.length > 0 || !mirrorPreview.operations.length || !mirrorBackupRoot.trim() || mirrorConfirmation !== "MIRROR" || mirrorExecuting || !isTauri()} onClick={() => void executeMirror()}>
+                      {mirrorExecuting ? "Verifying destination backup and applying Mirror…" : "Create verified backup & execute Mirror"}
+                    </button>
+                    <small>Changing the direction or backup folder invalidates this preview. Any stale or altered plan requires a new scan and approval.</small>
+                  </div>
+                </div>
+              )}
+              {mirrorReport && (
+                <div className="preview-result execution-report">
+                  <h3>Mirror execution report</h3>
+                  <div className="metrics-grid">
+                    <div className="metric-card"><span>Final status</span><strong>{String(mirrorReport.final_status)}</strong></div>
+                    <div className="metric-card"><span>Succeeded</span><strong>{Number(mirrorReport.succeeded ?? 0)}</strong></div>
+                    <div className="metric-card"><span>Skipped</span><strong>{Number(mirrorReport.skipped ?? 0)}</strong></div>
+                    <div className="metric-card"><span>Failed</span><strong>{Number(mirrorReport.failed ?? 0)}</strong></div>
+                  </div>
+                  <p>Verified backup(s): {(mirrorReport.backups ?? []).join(", ") || "No backup was required."}</p>
+                  <details><summary>Full execution report</summary><pre>{JSON.stringify(mirrorReport, null, 2)}</pre></details>
+                </div>
+              )}
+              {stalePlan && <div className="error-notice stale-notice"><strong>Plan is stale</strong><p>One or both libraries changed after scanning. Rescan before building or executing another preview.</p><button className="secondary-button" onClick={() => void scan()}>Rescan libraries</button></div>}
+              {error && <div className="error-notice" role="alert">{error}</div>}
+            </>
+          )}
+
+          {active !== "library" && active !== "compare" && active !== "review" && active !== "mirror" && (
             <div className="empty-section"><div className="empty-icon" aria-hidden="true">{section.mark}</div><h2>{section.label} is waiting for its safety workflow</h2><p>{section.hint}. This section remains unavailable until review, freshness validation, verified backups, and recovery behavior are connected to the Python engine.</p><button className="secondary-button" onClick={() => setActive("library")}>Back to library workspace</button></div>
           )}
 
