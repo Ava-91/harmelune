@@ -224,7 +224,12 @@ function App() {
     const key = row.category === "a_only" ? `a-only:${row.a?.path ?? ""}`
       : row.category === "b_only" ? `b-only:${row.b?.path ?? ""}`
       : `match:${row.a?.path ?? ""}`;
-    setReconcileDecisions((current) => ({ ...current, [key]: value }));
+    setReconcileDecisions((current) => {
+      const next = { ...current };
+      if (value) next[key] = value;
+      else delete next[key];
+      return next;
+    });
     setReconcilePreview(null);
     setError("");
   };
