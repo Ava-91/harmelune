@@ -13,7 +13,10 @@ import traceback
 from pathlib import Path
 from uuid import uuid4
 
-from .services import ScanBundle, scan_libraries
+from .direction import select_master
+from .dry_run import DryRunResult
+from .models import SyncMode
+from .services import ScanBundle, preview_workflow, scan_libraries
 
 PROTOCOL_VERSION = 1
 MAX_REQUEST_BYTES = 1_048_576
@@ -167,7 +170,7 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
         result: dict[str, object] = {
             "engine": "harmelune-python",
             "protocol_version": PROTOCOL_VERSION,
-            "capabilities": ["scan", "list_tracks", "shutdown"],
+            "capabilities": ["scan", "list_tracks", "preview_safe", "shutdown"],
             "read_only": True,
         }
         return ({"version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True, "result": result}, False)
@@ -206,6 +209,41 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
         return ({
             "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
             "result": _page(stored[1], params),
+        }, False)
+
+    if command == "preview_safe":
+        plan_id = _require_string(params, "plan_id")
+        master_library = _require_string(params, "master_library")
+        stored = _PLANS.get(plan_id)
+        if stored is None:
+            raise ProtocolError("PLAN_NOT_FOUND", "This scan is no longer available. Scan both libraries again.")
+        bundle, rows = stored
+        summary = _summary(bundle, rows)
+        if not summary["safe_to_preview"]:
+            raise ProtocolError("SCAN_INCOMPLETE", "A dry-run preview is blocked because one or both library scans are incomplete or have errors.")
+        try:
+            direction = select_master(bundle.library_a, bundle.library_b, master_library)
+            preview: DryRunResult = preview_workflow(bundle.plan, SyncMode.SAFE, direction)
+        except (OSError, ValueError) as exc:
+            raise ProtocolError("PREVIEW_BLOCKED", str(exc)) from exc
+        return ({
+            "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
+            "result": {
+                "mode": "safe",
+                "status": preview.status,
+                "operations": [
+                    {
+                        "kind": operation.kind.value,
+                        "source": str(operation.source) if operation.source is not None else None,
+                        "destination": str(operation.destination),
+                    }
+                    for operation in preview.operations
+                ],
+                "skipped": preview.skipped,
+                "blocked": preview.blocked,
+                "operation_count": len(preview.operations),
+                "mutations_enabled": False,
+            },
         }, False)
 
     if command == "shutdown":
