@@ -26,6 +26,24 @@ async function engineRequest(command: string, params: Record<string, unknown> = 
   });
 }
 
+function PreviewPanel({ preview }: { preview: SafePreview }) {
+  return (
+    <div className="preview-result">
+      <div className="metrics-grid">
+        <div className="metric-card"><span>Planned operations</span><strong>{preview.operation_count}</strong><small>no files changed</small></div>
+        <div className="metric-card"><span>Skipped</span><strong>{preview.skipped.length}</strong><small>explicitly left untouched</small></div>
+        <div className="metric-card"><span>Blocked</span><strong>{preview.blocked.length}</strong><small>requires attention</small></div>
+        <div className="metric-card"><span>Engine status</span><strong>{preview.status}</strong><small>{preview.mode} dry-run result</small></div>
+      </div>
+      <div className="notice"><div className="notice-icon">i</div><div><strong>Preview only — execution is still disabled</strong><p>No copy, replace, delete, backup, or restore action is performed by this preview.</p></div></div>
+      <h3 className="preview-list-title">Planned operations {preview.operations.length > 20 ? "(first 20 shown)" : ""}</h3>
+      {preview.operations.length ? <ul className="preview-list">{preview.operations.slice(0, 20).map((operation, index) => <li key={index}><span className="operation-kind">{operation.kind}</span><span className="operation-path">{operation.source ?? "—"}<span>→ {operation.destination}</span></span></li>)}</ul> : <div className="table-empty">No operations are planned for this preview.</div>}
+      {preview.blocked.length > 0 && <div className="error-notice"><strong>Blocked items</strong><ul>{preview.blocked.slice(0, 20).map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
+      {preview.skipped.length > 0 && <div className="notice"><div className="notice-icon">i</div><div><strong>Skipped items</strong><ul>{preview.skipped.slice(0, 20).map((item, index) => <li key={index}>{item}</li>)}</ul></div></div>}
+    </div>
+  );
+}
+
 function App() {
   const [active, setActive] = useState<SectionId>("library");
   const [engineStatus, setEngineStatus] = useState("Connecting to Python engine…");
@@ -35,6 +53,14 @@ function App() {
   const [masterLibrary, setMasterLibrary] = useState("library_a");
   const [preview, setPreview] = useState<SafePreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
+  const [reconcileDecisions, setReconcileDecisions] = useState<Record<string, string>>({});
+  const [backupRoot, setBackupRoot] = useState("");
+  const [reconcilePreview, setReconcilePreview] = useState<SafePreview | null>(null);
+  const [reconcilePreviewing, setReconcilePreviewing] = useState(false);
+  const [reviewRows, setReviewRows] = useState<ComparisonRow[]>([]);
+  const [reviewPage, setReviewPage] = useState(0);
+  const [reviewTotal, setReviewTotal] = useState(0);
+  const [stalePlan, setStalePlan] = useState(false);
   const [summary, setSummary] = useState<ScanSummary | null>(null);
   const [rows, setRows] = useState<ComparisonRow[]>([]);
   const [totalRows, setTotalRows] = useState(0);
@@ -89,6 +115,26 @@ function App() {
     };
   }, [planId, query, category, pageIndex]);
 
+  useEffect(() => {
+    if (active !== "review" || !planId || !isTauri()) return;
+    let cancelled = false;
+    void engineRequest("list_tracks", { plan_id: planId, offset: reviewPage * 100, limit: 100, category: "all", query: "" })
+      .then((response) => {
+        if (cancelled) return;
+        if (!response.ok) throw new Error(response.error?.message ?? "Could not load review items.");
+        const page = response.result as { rows: ComparisonRow[]; total: number };
+        setReviewRows(page.rows);
+        setReviewTotal(page.total);
+      })
+      .catch((reason) => {
+        if (!cancelled) {
+          setReviewRows([]);
+          setError(reason instanceof Error ? reason.message : String(reason));
+        }
+      });
+    return () => { cancelled = true; };
+  }, [active, planId, reviewPage]);
+
   const chooseFolder = async (which: "a" | "b") => {
     setError("");
     try {
@@ -99,6 +145,9 @@ function App() {
       setPlanId("");
       setSummary(null);
       setPreview(null);
+      setReconcilePreview(null);
+      setReconcileDecisions({});
+      setStalePlan(false);
       setRows([]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -125,6 +174,10 @@ function App() {
       setPlanId(result.plan_id);
       setSummary(result.summary);
       setPreview(null);
+      setReconcilePreview(null);
+      setReconcileDecisions({});
+      setStalePlan(false);
+      setReviewPage(0);
       setRows(result.page.rows);
       setTotalRows(result.page.total);
       setPageIndex(0);
@@ -150,16 +203,69 @@ function App() {
       return;
     }
     setError("");
+    setStalePlan(false);
     setPreviewing(true);
     try {
       const response = await engineRequest("preview_safe", { plan_id: planId, master_library: masterLibrary });
-      if (!response.ok) throw new Error(response.error?.message ?? "Could not build the dry-run preview.");
+      if (!response.ok) {
+        setStalePlan(response.error?.code === "STALE_PLAN" || response.error?.code === "PLAN_NOT_FOUND");
+        throw new Error(response.error?.message ?? "Could not build the dry-run preview.");
+      }
       setPreview(response.result as unknown as SafePreview);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
       setPreview(null);
     } finally {
       setPreviewing(false);
+    }
+  };
+
+  const setDecision = (row: ComparisonRow, value: string) => {
+    const key = row.category === "a_only" ? `a-only:${row.a?.path ?? ""}`
+      : row.category === "b_only" ? `b-only:${row.b?.path ?? ""}`
+      : `match:${row.a?.path ?? ""}`;
+    setReconcileDecisions((current) => {
+      const next = { ...current };
+      if (value) next[key] = value;
+      else delete next[key];
+      return next;
+    });
+    setReconcilePreview(null);
+    setError("");
+  };
+
+  const buildReconcilePreview = async () => {
+    if (!planId || !summary) {
+      setError("Scan both libraries before building a Reconcile preview.");
+      return;
+    }
+    if (!summary.safe_to_preview) {
+      setError("Reconcile preview is blocked because one or both scans have errors or are incomplete.");
+      return;
+    }
+    if (!backupRoot.trim()) {
+      setError("Choose a separate backup location before previewing Reconcile.");
+      return;
+    }
+    setError("");
+    setStalePlan(false);
+    setReconcilePreviewing(true);
+    try {
+      const response = await engineRequest("preview_reconcile", {
+        plan_id: planId,
+        decisions: reconcileDecisions,
+        backup_root: backupRoot.trim(),
+      });
+      if (!response.ok) {
+        setStalePlan(response.error?.code === "STALE_PLAN" || response.error?.code === "PLAN_NOT_FOUND");
+        throw new Error(response.error?.message ?? "Could not build the Reconcile preview.");
+      }
+      setReconcilePreview(response.result as unknown as SafePreview);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setReconcilePreview(null);
+    } finally {
+      setReconcilePreviewing(false);
     }
   };
 
@@ -209,7 +315,7 @@ function App() {
 
           <div className="notice" role="status">
             <div className="notice-icon" aria-hidden="true">i</div>
-            <div><strong>File-changing actions are still locked</strong><p>The Python bridge currently supports read-only scanning and comparison. Review, dry-run, backups, and execution will be enabled only after their safety gates are ported and tested.</p></div>
+            <div><strong>File-changing actions are still locked</strong><p>Scanning, explicit review decisions, and Safe/Reconcile dry-run previews are available. File execution, backup creation, restore, and Mirror remain locked until their separate safety gates are implemented and tested.</p></div>
           </div>
 
           {active === "library" && (
@@ -294,28 +400,65 @@ function App() {
               <div className="preview-controls">
                 <label htmlFor="master-library">Copy source (master library)</label>
                 <select id="master-library" value={masterLibrary} onChange={(event) => { setMasterLibrary(event.target.value); setPreview(null); }}>
-                  <option value="library_a">Library A → Library B</option>
-                  <option value="library_b">Library B → Library A</option>
+                  <option value="library_a">Library A → Library B</option><option value="library_b">Library B → Library A</option>
                 </select>
                 <button className="primary-button" disabled={!hasScan || !summary?.safe_to_preview || previewing || !isTauri()} onClick={() => void buildSafePreview()}>{previewing ? "Building preview…" : "Build safe-mode preview"}</button>
               </div>
               {!summary && <div className="table-empty">Scan both libraries first. No preview can be built without a current scan.</div>}
               {summary && !summary.safe_to_preview && <div className="error-notice">Preview blocked: resolve scan errors or incomplete enumeration, then scan again.</div>}
-              {preview && (
-                <div className="preview-result">
-                  <div className="metrics-grid">
-                    <div className="metric-card"><span>Planned copies</span><strong>{preview.operation_count}</strong><small>no files changed</small></div>
-                    <div className="metric-card"><span>Skipped</span><strong>{preview.skipped.length}</strong><small>already present or excluded</small></div>
-                    <div className="metric-card"><span>Blocked</span><strong>{preview.blocked.length}</strong><small>requires attention</small></div>
-                    <div className="metric-card"><span>Engine status</span><strong>{preview.status}</strong><small>Python dry-run result</small></div>
-                  </div>
-                  <div className="notice"><div className="notice-icon">i</div><div><strong>Preview only — execution is still disabled</strong><p>This list is informational. No copy, replace, delete, backup, or restore command is available in this desktop phase.</p></div></div>
-                  <h3 className="preview-list-title">Planned operations {preview.operations.length > 20 ? "(first 20 shown)" : ""}</h3>
-                  {preview.operations.length ? <ul className="preview-list">{preview.operations.slice(0, 20).map((operation, index) => <li key={index}><span className="operation-kind">{operation.kind}</span><span className="operation-path">{operation.source ?? "—"}<span>→ {operation.destination}</span></span></li>)}</ul> : <div className="table-empty">No copy operations are needed for this direction.</div>}
-                  {preview.blocked.length > 0 && <div className="error-notice"><strong>Blocked items</strong><ul>{preview.blocked.slice(0, 10).map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
-                  {preview.skipped.length > 0 && <div className="notice"><div className="notice-icon">i</div><div><strong>Skipped items</strong><ul>{preview.skipped.slice(0, 10).map((item, index) => <li key={index}>{item}</li>)}</ul></div></div>}
-                </div>
-              )}
+              {preview && <PreviewPanel preview={preview} />}
+              <div className="section-title-row reconcile-heading"><div><h2>Reconcile review</h2><p>Choose a decision for each unmatched track and each uncertain or conflicting match. No choice is applied automatically.</p></div><span className="subtle-label">{Object.keys(reconcileDecisions).length} DECISIONS SAVED</span></div>
+              <div className="reconcile-intro">
+                <span>{summary ? `${summary.counts.a_only + summary.counts.b_only + summary.counts.fuzzy + summary.counts.conflicts} item(s) require an explicit decision across the scan` : "Scan libraries to load review items."}</span>
+                <span>Review page {reviewPage + 1} of {Math.max(1, Math.ceil(reviewTotal / 100))}</span>
+              </div>
+              <div className="review-items">
+                {reviewRows.filter((row) => row.category !== "exact" || row.metadata_conflict || row.artwork_conflict).map((row, index) => {
+                  const key = row.category === "a_only" ? `a-only:${row.a?.path ?? ""}`
+                    : row.category === "b_only" ? `b-only:${row.b?.path ?? ""}`
+                    : `match:${row.a?.path ?? ""}`;
+                  const selected = reconcileDecisions[key] ?? "";
+                  const trackA = row.a;
+                  const trackB = row.b;
+                  const title = trackA && trackB ? `${trackA.title} ↔ ${trackB.title}` : (trackA ?? trackB)?.title ?? "Unknown track";
+                  const detail = trackA && trackB ? `${trackA.artist} / ${trackB.artist}` : (trackA ?? trackB)?.artist ?? "";
+                  const matchNeedsDecision = row.category === "fuzzy" || row.category === "conflicts";
+                  return (
+                    <article className="review-item" key={key || index}>
+                      <div className="review-item-main">
+                        <span className={`category-pill category-${row.category}`}>{row.label}</span>
+                        <strong>{title}</strong><span className="review-artist">{detail}</span>
+                        {typeof row.confidence === "number" && <span className="review-reason">Match confidence: {Math.round(row.confidence * 100)}%</span>}
+                        {row.metadata_conflict && <span className="review-reason conflict">Metadata differs between libraries</span>}
+                        {row.artwork_conflict && <span className="review-reason conflict">Artwork differs between libraries</span>}
+                        {(row.reasons ?? []).map((reason, reasonIndex) => <span className="review-reason" key={reasonIndex}>{reason}</span>)}
+                        <span className="review-path">{trackA?.path ?? "—"}{trackB ? ` ↔ ${trackB.path}` : ""}</span>
+                      </div>
+                      <label className="decision-label">Decision
+                        <select value={selected} onChange={(event) => setDecision(row, event.target.value)}>
+                          <option value="">Choose explicitly…</option>
+                          {row.category === "a_only" && <><option value="copy_a_to_b">Copy A → B</option><option value="skip">Keep separate / skip</option></>}
+                          {row.category === "b_only" && <><option value="copy_b_to_a">Copy B → A</option><option value="skip">Keep separate / skip</option></>}
+                          {matchNeedsDecision && <><option value="keep_a">Keep Library A version</option><option value="keep_b">Keep Library B version</option><option value="skip">Keep both / skip</option></>}
+                        </select>
+                      </label>
+                    </article>
+                  );
+                })}
+                {!reviewRows.some((row) => row.category !== "exact" || row.metadata_conflict || row.artwork_conflict) && <div className="table-empty">No review items on this page.</div>}
+              </div>
+              <div className="page-controls review-pagination">
+                <button className="secondary-button page-button" disabled={reviewPage === 0} onClick={() => setReviewPage((page) => Math.max(0, page - 1))}>Previous review page</button>
+                <button className="secondary-button page-button" disabled={(reviewPage + 1) * 100 >= reviewTotal} onClick={() => setReviewPage((page) => page + 1)}>Next review page</button>
+              </div>
+              <div className="reconcile-backup">
+                <label htmlFor="backup-root">Separate backup location (required)</label>
+                <input id="backup-root" value={backupRoot} onChange={(event) => { setBackupRoot(event.target.value); setReconcilePreview(null); }} placeholder="Choose a folder outside both music libraries…" />
+                <small>Preview validates this location but does not create a backup or modify any file.</small>
+                <button className="primary-button" disabled={!hasScan || !summary?.safe_to_preview || reconcilePreviewing || !isTauri()} onClick={() => void buildReconcilePreview()}>{reconcilePreviewing ? "Building Reconcile preview…" : "Build Reconcile dry run"}</button>
+              </div>
+              {reconcilePreview && <PreviewPanel preview={reconcilePreview} />}
+              {stalePlan && <div className="error-notice stale-notice"><strong>Plan is stale</strong><p>One or both libraries changed after scanning. Rescan before reviewing or previewing again.</p><button className="secondary-button" onClick={() => void scan()}>Rescan libraries</button></div>}
               {error && <div className="error-notice" role="alert">{error}</div>}
             </>
           )}

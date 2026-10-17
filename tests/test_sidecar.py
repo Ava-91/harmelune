@@ -202,3 +202,76 @@ def test_safe_preview_requires_valid_plan_and_explicit_master(tmp_path: Path, mo
             assert exc.code == expected
         else:
             raise AssertionError(f"Expected {expected} for {params!r}")
+
+
+def test_reconcile_preview_requires_explicit_decisions_and_separate_backup_root(tmp_path: Path, monkeypatch):
+    from harmelune import sidecar
+
+    a, b = tmp_path / "Library A", tmp_path / "Library B"
+    a.mkdir()
+    b.mkdir()
+    write_wav(a / "Only A.wav", 80)
+    write_wav(b / "Only B.wav", 83)
+    monkeypatch.setattr(sidecar, "_PLANS", {})
+    scan, _ = sidecar._handle(
+        json.loads(request("scan", "scan", {"library_a": str(a), "library_b": str(b)})),
+        lambda _event: None,
+    )
+    plan_id = scan["result"]["plan_id"]
+    backup_root = str(tmp_path / "separate-backups")
+
+    blocked, _ = sidecar._handle(
+        json.loads(request("missing-decisions", "preview_reconcile", {
+            "plan_id": plan_id, "backup_root": backup_root, "decisions": {},
+        })),
+        lambda _event: None,
+    )
+    assert blocked["ok"] is True
+    assert blocked["result"]["status"] == "BLOCKED"
+    assert blocked["result"]["mutations_enabled"] is False
+    assert blocked["result"]["blocked"]
+
+    decisions = {
+        f"a-only:{a / 'Only A.wav'}": "copy_a_to_b",
+        f"b-only:{b / 'Only B.wav'}": "copy_b_to_a",
+    }
+    preview, _ = sidecar._handle(
+        json.loads(request("complete-decisions", "preview_reconcile", {
+            "plan_id": plan_id, "backup_root": backup_root, "decisions": decisions,
+        })),
+        lambda _event: None,
+    )
+    assert preview["ok"] is True
+    assert preview["result"]["status"] == "SUCCESS"
+    assert preview["result"]["operation_count"] == 2
+    assert all(operation["kind"] == "copy" for operation in preview["result"]["operations"])
+    assert not (tmp_path / "separate-backups").exists()
+    assert (a / "Only A.wav").exists() and (b / "Only B.wav").exists()
+
+
+def test_preview_reports_stale_plan_after_library_changes(tmp_path: Path, monkeypatch):
+    from harmelune import sidecar
+
+    a, b = tmp_path / "Library A", tmp_path / "Library B"
+    a.mkdir()
+    b.mkdir()
+    write_wav(a / "Only A.wav", 80)
+    write_wav(b / "Only B.wav", 83)
+    monkeypatch.setattr(sidecar, "_PLANS", {})
+    scan, _ = sidecar._handle(
+        json.loads(request("scan", "scan", {"library_a": str(a), "library_b": str(b)})),
+        lambda _event: None,
+    )
+    plan_id = scan["result"]["plan_id"]
+    write_wav(a / "added-after-scan.wav", 85)
+
+    try:
+        sidecar._handle(
+            json.loads(request("stale", "preview_safe", {"plan_id": plan_id, "master_library": "library_a"})),
+            lambda _event: None,
+        )
+    except sidecar.ProtocolError as exc:
+        assert exc.code == "STALE_PLAN"
+        assert "Scan both libraries again" in str(exc)
+    else:
+        raise AssertionError("A stale plan must not produce a preview.")
