@@ -6,6 +6,8 @@ standard error. The desktop frontend cannot ask this process to execute shell co
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import sys
 import traceback
@@ -17,7 +19,8 @@ from .freshness import StalePlanError
 from .dry_run import DryRunResult
 from .models import SyncMode
 from .reconcile import ReconcileDecision
-from .services import ScanBundle, preview_workflow, scan_libraries
+from .services import ScanBundle, execute_workflow, preview_workflow, scan_libraries
+from .path_safety import validate_backup_root
 
 PROTOCOL_VERSION = 1
 MAX_REQUEST_BYTES = 1_048_576
@@ -114,6 +117,24 @@ def _summary(bundle: ScanBundle, rows: list[dict[str, object]]) -> dict[str, obj
     }
 
 
+
+def _safe_preview_token(plan_id: str, master_library: str, preview: DryRunResult) -> str:
+    """Bind an execution approval to the exact read-only preview shown to the user."""
+    payload = {
+        "plan_id": plan_id,
+        "master_library": master_library,
+        "operations": [
+            {"kind": operation.kind.value, "source": str(operation.source) if operation.source is not None else None,
+             "destination": str(operation.destination)}
+            for operation in preview.operations
+        ],
+        "skipped": preview.skipped,
+        "blocked": preview.blocked,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _require_string(params: dict[str, object], name: str) -> str:
     value = params.get(name)
     if not isinstance(value, str) or not value.strip():
@@ -171,8 +192,8 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
         result: dict[str, object] = {
             "engine": "harmelune-python",
             "protocol_version": PROTOCOL_VERSION,
-            "capabilities": ["scan", "list_tracks", "preview_safe", "preview_reconcile", "shutdown"],
-            "read_only": True,
+            "capabilities": ["scan", "list_tracks", "preview_safe", "preview_reconcile", "execute_safe", "shutdown"],
+            "read_only": False,
         }
         return ({"version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True, "result": result}, False)
 
@@ -234,6 +255,7 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
             "result": {
                 "mode": "safe",
                 "status": preview.status,
+                "preview_token": _safe_preview_token(plan_id, master_library, preview),
                 "operations": [
                     {
                         "kind": operation.kind.value,
@@ -247,6 +269,45 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
                 "operation_count": len(preview.operations),
                 "mutations_enabled": False,
             },
+        }, False)
+
+
+    if command == "execute_safe":
+        plan_id = _require_string(params, "plan_id")
+        master_library = _require_string(params, "master_library")
+        backup_root = _require_string(params, "backup_root")
+        confirmation = params.get("confirmation")
+        supplied_token = _require_string(params, "preview_token")
+        if confirmation != "APPLY SAFE":
+            raise ProtocolError("CONFIRMATION_REQUIRED", 'Safe execution requires exact confirmation text: APPLY SAFE.')
+        stored = _PLANS.get(plan_id)
+        if stored is None:
+            raise ProtocolError("PLAN_NOT_FOUND", "This scan is no longer available. Scan both libraries again.")
+        bundle, rows = stored
+        summary = _summary(bundle, rows)
+        if not summary["safe_to_preview"]:
+            raise ProtocolError("SCAN_INCOMPLETE", "Safe execution is blocked because one or both scans are incomplete or have errors.")
+        try:
+            direction = select_master(bundle.library_a, bundle.library_b, master_library)
+            validate_backup_root(backup_root, (bundle.library_a, bundle.library_b))
+            preview = preview_workflow(bundle.plan, SyncMode.SAFE, direction)
+            expected_token = _safe_preview_token(plan_id, master_library, preview)
+            if not hmac.compare_digest(supplied_token, expected_token):
+                raise ProtocolError("PREVIEW_MISMATCH", "The approved preview no longer matches. Build a fresh preview and confirm it again.")
+            if preview.status != "SUCCESS" or preview.blocked:
+                raise ProtocolError("PREVIEW_BLOCKED", "Safe execution is blocked because the preview contains blocked operations.")
+            if any(operation.kind.value != "copy" for operation in preview.operations):
+                raise ProtocolError("UNSAFE_OPERATION", "Safe execution permits copy-only operations.")
+            report = execute_workflow(bundle.plan, SyncMode.SAFE, direction, backup_root)
+        except StalePlanError as exc:
+            raise ProtocolError("STALE_PLAN", f"{exc} Rescan both libraries before executing.") from exc
+        except ProtocolError:
+            raise
+        except (OSError, ValueError) as exc:
+            raise ProtocolError("EXECUTION_BLOCKED", str(exc)) from exc
+        return ({
+            "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
+            "result": {"execution": report.to_dict(), "mutations_enabled": True},
         }, False)
 
     if command == "preview_reconcile":
@@ -293,7 +354,7 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
             "result": {"stopped": True},
         }, True)
 
-    raise ProtocolError("UNKNOWN_COMMAND", "Supported commands are hello, ping, scan, list_tracks, and shutdown.")
+    raise ProtocolError("UNKNOWN_COMMAND", "Supported commands are hello, ping, scan, list_tracks, preview_safe, preview_reconcile, execute_safe, and shutdown.")
 
 
 def main() -> int:
