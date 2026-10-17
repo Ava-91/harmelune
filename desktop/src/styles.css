@@ -184,3 +184,15 @@ h1 { margin: 0; color: #f0f2f7; font-size: clamp(25px, 3vw, 34px); line-height: 
 .stale-notice { display: grid; gap: 8px; }
 .stale-notice p { margin: 0; }
 @media (max-width: 800px) { .review-item { grid-template-columns: 1fr; } .reconcile-intro { flex-direction: column; } .reconcile-backup .primary-button { width: 100%; } }
+
+
+.safe-execution-panel { margin-top: 22px; border: 1px solid #3a4b5d; border-radius: 12px; padding: 20px; background: #111925; }
+.safe-execution-panel h3, .execution-report h3 { margin: 0 0 10px; color: var(--text); font-size: 15px; }
+.safe-execution-panel p, .safe-execution-panel small, .execution-report p { color: var(--muted); line-height: 1.6; }
+.safe-execution-panel label { display: block; margin: 14px 0 7px; color: var(--text); font-size: 12px; font-weight: 650; }
+.safe-execution-panel input { display: block; width: 100%; min-height: 42px; padding: 10px 12px; color: var(--text); background: #0b0e14; border: 1px solid var(--line); border-radius: 7px; }
+.safe-execution-panel .primary-button { margin-top: 15px; }
+.safe-execution-panel .primary-button:disabled { opacity: .45; cursor: not-allowed; }
+.execution-report { margin-top: 22px; }
+.execution-report pre { max-width: 100%; overflow: auto; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: #0b0e14; color: var(--text); font-size: 11px; }
+.execution-report summary { color: var(--cyan); cursor: pointer; }
