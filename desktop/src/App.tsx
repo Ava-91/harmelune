@@ -540,7 +540,7 @@ function App() {
           )}
 
           {error && active === "library" && <div className="error-notice" role="alert">{error}</div>}
-          <footer className="page-footer"><span><span className="status-dot" /> {scanning ? progress : "Scan is read-only · no library files changed"}</span><span>Python stays the sync engine · Tauri stays the desktop shell</span></footer>
+          <footer className="page-footer"><span><span className="status-dot" /> {scanning ? progress : executionReport ? `Last Safe execution: ${String(executionReport.final_status)}` : "Scan is read-only · no library files changed"}</span><span>Python stays the sync engine · Tauri stays the desktop shell</span></footer>
         </section>
       </main>
     </div>
