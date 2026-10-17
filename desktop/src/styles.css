@@ -162,3 +162,25 @@ h1 { margin: 0; color: #f0f2f7; font-size: clamp(25px, 3vw, 34px); line-height: 
 .preview-result .notice { margin-top: 18px; }
 .preview-result ul { color: #aeb8c9; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
 @media (max-width: 900px) { .preview-controls { align-items: stretch; flex-direction: column; } .preview-controls .primary-button { margin-left: 0; } .preview-list li { flex-direction: column; } }
+
+
+.reconcile-heading { margin-top: 34px; }
+.reconcile-intro { display: flex; justify-content: space-between; gap: 12px; margin: 12px 0; color: var(--muted); font-size: 11px; }
+.review-items { display: grid; gap: 10px; }
+.review-item { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 290px); align-items: start; gap: 18px; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.review-item-main { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 7px; }
+.review-item-main > strong { color: #e7ebf3; font-size: 13px; overflow-wrap: anywhere; }
+.review-artist { color: #9ba8ba; font-size: 11px; }
+.review-reason { color: #a9b5c7; font-size: 10px; line-height: 1.5; }
+.review-reason.conflict { color: #ffcb78; }
+.review-path { max-width: 100%; color: #738096; font-size: 10px; overflow-wrap: anywhere; }
+.decision-label { display: grid; gap: 8px; color: var(--muted); font-size: 10px; }
+.decision-label select, .reconcile-backup input { width: 100%; min-width: 0; padding: 10px 12px; color: var(--text); border: 1px solid #30394a; border-radius: 6px; background: #101620; }
+.review-pagination { display: flex; justify-content: flex-end; gap: 8px; margin: 14px 0 24px; }
+.reconcile-backup { display: grid; gap: 10px; margin: 16px 0; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.reconcile-backup label { color: #dfe4ed; font-size: 11px; }
+.reconcile-backup small { color: var(--muted); font-size: 10px; line-height: 1.5; }
+.reconcile-backup .primary-button { justify-self: start; }
+.stale-notice { display: grid; gap: 8px; }
+.stale-notice p { margin: 0; }
+@media (max-width: 800px) { .review-item { grid-template-columns: 1fr; } .reconcile-intro { flex-direction: column; } .reconcile-backup .primary-button { width: 100%; } }
