@@ -1,11 +1,12 @@
 """Restricted JSONL bridge for the desktop UI.
 
-Only explicitly enumerated scan, review, dry-run, and gated Safe-execution
-commands are exposed. Safe execution requires an exact preview token and
-confirmation, validates the backup location against both libraries, and uses
-the existing verified-backup transaction engine. Standard output is reserved
-for one JSON object per line; diagnostics go to standard error. The desktop
-frontend cannot execute shell commands or arbitrary Python code.
+Only explicitly enumerated scan, review, dry-run, and gated Safe/Reconcile
+execution commands are exposed. Both execution paths require an exact preview
+token and typed confirmation, validate backup locations against both libraries,
+and use the existing verified-backup transaction engine. Reconcile applies only
+explicit decisions and never deletes files. Standard output is reserved for one
+JSON object per line; diagnostics go to standard error. The desktop frontend
+cannot execute shell commands or arbitrary Python code.
 """
 from __future__ import annotations
 
