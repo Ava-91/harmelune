@@ -187,6 +187,8 @@ function App() {
       setPreview(null);
       setReconcilePreview(null);
       setReconcileDecisions({});
+      setReconcileConfirmation("");
+      setReconcileReport(null);
       setSafeConfirmation("");
       setExecutionReport(null);
       setStalePlan(false);
