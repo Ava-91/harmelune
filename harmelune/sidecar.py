@@ -1,8 +1,11 @@
 """Restricted JSONL bridge for the desktop UI.
 
-Only read-only scan, review, and dry-run preview commands are exposed.
-Standard output is reserved for one JSON object per line; diagnostics go to
-standard error. The desktop frontend cannot ask this process to execute shell commands or arbitrary Python code.
+Only explicitly enumerated scan, review, dry-run, and gated Safe-execution
+commands are exposed. Safe execution requires an exact preview token and
+confirmation, validates the backup location against both libraries, and uses
+the existing verified-backup transaction engine. Standard output is reserved
+for one JSON object per line; diagnostics go to standard error. The desktop
+frontend cannot execute shell commands or arbitrary Python code.
 """
 from __future__ import annotations
 
