@@ -310,7 +310,7 @@ function App() {
 
           <div className="notice" role="status">
             <div className="notice-icon" aria-hidden="true">i</div>
-            <div><strong>File-changing actions are still locked</strong><p>The Python bridge currently supports read-only scanning and comparison. Review, dry-run, backups, and execution will be enabled only after their safety gates are ported and tested.</p></div>
+            <div><strong>File-changing actions are still locked</strong><p>Scanning, explicit review decisions, and Safe/Reconcile dry-run previews are available. File execution, backup creation, restore, and Mirror remain locked until their separate safety gates are implemented and tested.</p></div>
           </div>
 
           {active === "library" && (
