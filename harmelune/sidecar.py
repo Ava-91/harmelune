@@ -14,8 +14,10 @@ from pathlib import Path
 from uuid import uuid4
 
 from .direction import select_master
+from .freshness import StalePlanError
 from .dry_run import DryRunResult
 from .models import SyncMode
+from .reconcile import ReconcileDecision
 from .services import ScanBundle, preview_workflow, scan_libraries
 
 PROTOCOL_VERSION = 1
@@ -170,7 +172,7 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
         result: dict[str, object] = {
             "engine": "harmelune-python",
             "protocol_version": PROTOCOL_VERSION,
-            "capabilities": ["scan", "list_tracks", "preview_safe", "shutdown"],
+            "capabilities": ["scan", "list_tracks", "preview_safe", "preview_reconcile", "shutdown"],
             "read_only": True,
         }
         return ({"version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True, "result": result}, False)
@@ -224,6 +226,8 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
         try:
             direction = select_master(bundle.library_a, bundle.library_b, master_library)
             preview: DryRunResult = preview_workflow(bundle.plan, SyncMode.SAFE, direction)
+        except StalePlanError as exc:
+            raise ProtocolError("STALE_PLAN", f"{exc} Rescan both libraries before previewing again.") from exc
         except (OSError, ValueError) as exc:
             raise ProtocolError("PREVIEW_BLOCKED", str(exc)) from exc
         return ({
@@ -246,6 +250,44 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
             },
         }, False)
 
+    if command == "preview_reconcile":
+        plan_id = _require_string(params, "plan_id")
+        backup_root = _require_string(params, "backup_root")
+        raw_decisions = params.get("decisions")
+        if not isinstance(raw_decisions, dict):
+            raise ProtocolError("INVALID_ARGUMENT", "decisions must be an object mapping review item keys to explicit decisions.")
+        stored = _PLANS.get(plan_id)
+        if stored is None:
+            raise ProtocolError("PLAN_NOT_FOUND", "This scan is no longer available. Scan both libraries again.")
+        bundle, rows = stored
+        summary = _summary(bundle, rows)
+        if not summary["safe_to_preview"]:
+            raise ProtocolError("SCAN_INCOMPLETE", "Reconcile preview is blocked because one or both library scans are incomplete or have errors.")
+        allowed = {decision.value: decision for decision in ReconcileDecision}
+        decisions: dict[str, ReconcileDecision] = {}
+        for key, value in raw_decisions.items():
+            if not isinstance(key, str) or not key or len(key) > 32768:
+                raise ProtocolError("INVALID_ARGUMENT", "Each decision key must be a non-empty string.")
+            if not isinstance(value, str) or value not in allowed:
+                raise ProtocolError("INVALID_ARGUMENT", f"Unsupported Reconcile decision for {key!r}.")
+            decisions[key] = allowed[value]
+        try:
+            preview = preview_workflow(bundle.plan, SyncMode.RECONCILE, select_master(bundle.library_a, bundle.library_b, "library_a"), decisions=decisions, backup_root=backup_root)
+        except StalePlanError as exc:
+            raise ProtocolError("STALE_PLAN", f"{exc} Rescan both libraries before previewing again.") from exc
+        except (OSError, ValueError) as exc:
+            message = str(exc)
+            code = "DECISIONS_REQUIRED" if "explicit decision" in message.casefold() else "PREVIEW_BLOCKED"
+            raise ProtocolError(code, message) from exc
+        return ({
+            "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
+            "result": {
+                "mode": "reconcile", "status": preview.status,
+                "operations": [{"kind": op.kind.value, "source": str(op.source) if op.source is not None else None, "destination": str(op.destination)} for op in preview.operations],
+                "skipped": preview.skipped, "blocked": preview.blocked,
+                "operation_count": len(preview.operations), "mutations_enabled": False,
+            },
+        }, False)
     if command == "shutdown":
         return ({
             "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
