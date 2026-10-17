@@ -72,6 +72,14 @@ function App() {
   const [mirrorConfirmation, setMirrorConfirmation] = useState("");
   const [mirrorExecuting, setMirrorExecuting] = useState(false);
   const [mirrorReport, setMirrorReport] = useState<Record<string, any> | null>(null);
+  const [restoreBackupPath, setRestoreBackupPath] = useState("");
+  const [restoreTargetLibrary, setRestoreTargetLibrary] = useState("library_a");
+  const [restoreSafetyRoot, setRestoreSafetyRoot] = useState("");
+  const [restorePreview, setRestorePreview] = useState<Record<string, any> | null>(null);
+  const [restorePreviewing, setRestorePreviewing] = useState(false);
+  const [restoreConfirmation, setRestoreConfirmation] = useState("");
+  const [restoreExecuting, setRestoreExecuting] = useState(false);
+  const [restoreReport, setRestoreReport] = useState<Record<string, any> | null>(null);
   const [reviewRows, setReviewRows] = useState<ComparisonRow[]>([]);
   const [reviewPage, setReviewPage] = useState(0);
   const [reviewTotal, setReviewTotal] = useState(0);
@@ -167,6 +175,9 @@ function App() {
       setMirrorPreview(null);
       setMirrorConfirmation("");
       setMirrorReport(null);
+      setRestorePreview(null);
+      setRestoreConfirmation("");
+      setRestoreReport(null);
       setSafeConfirmation("");
       setExecutionReport(null);
       setStalePlan(false);
@@ -203,6 +214,9 @@ function App() {
       setMirrorPreview(null);
       setMirrorConfirmation("");
       setMirrorReport(null);
+      setRestorePreview(null);
+      setRestoreConfirmation("");
+      setRestoreReport(null);
       setSafeConfirmation("");
       setExecutionReport(null);
       setStalePlan(false);
@@ -443,6 +457,74 @@ function App() {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setMirrorExecuting(false);
+    }
+  };
+
+  const buildRestorePreview = async () => {
+    if (!planId || !summary) {
+      setError("Scan the intended libraries before restoring so the target path can be verified.");
+      return;
+    }
+    if (!restoreBackupPath.trim() || !restoreSafetyRoot.trim()) {
+      setError("Provide the verified backup directory and a separate safety-backup location.");
+      return;
+    }
+    setError("");
+    setRestorePreviewing(true);
+    setRestorePreview(null);
+    setRestoreConfirmation("");
+    setRestoreReport(null);
+    try {
+      const response = await engineRequest("preview_restore", {
+        plan_id: planId,
+        backup_path: restoreBackupPath.trim(),
+        target_library: restoreTargetLibrary,
+        safety_backup_root: restoreSafetyRoot.trim(),
+      });
+      if (!response.ok) {
+        setStalePlan(["PLAN_NOT_FOUND"].includes(response.error?.code ?? ""));
+        throw new Error(response.error?.message ?? "Restore preview was blocked.");
+      }
+      setRestorePreview(response.result ?? null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setRestorePreviewing(false);
+    }
+  };
+
+  const executeRestore = async () => {
+    if (!planId || !restorePreview?.preview_token || restoreConfirmation !== "RESTORE") {
+      setError('Build a verified Restore preview and type RESTORE exactly.');
+      return;
+    }
+    setError("");
+    setRestoreExecuting(true);
+    try {
+      const response = await engineRequest("execute_restore", {
+        plan_id: planId,
+        backup_path: restoreBackupPath.trim(),
+        target_library: restoreTargetLibrary,
+        safety_backup_root: restoreSafetyRoot.trim(),
+        preview_token: restorePreview.preview_token,
+        confirmation: restoreConfirmation,
+      });
+      if (!response.ok) {
+        setStalePlan(response.error?.code === "PLAN_NOT_FOUND" || response.error?.code === "PREVIEW_MISMATCH");
+        throw new Error(response.error?.message ?? "Restore execution failed.");
+      }
+      setRestoreReport(response.result ?? null);
+      setRestorePreview(null);
+      setRestoreConfirmation("");
+      if (response.result?.restored) {
+        setProgress("Restore completed · safety backup created and verified");
+      } else {
+        setError(response.result?.error ?? "Restore did not complete successfully. Preserve the target and safety backup for recovery.");
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setRestoreExecuting(false);
     }
   };
 
@@ -689,6 +771,81 @@ function App() {
             </>
           )}
 
+          {active === "backups" && (
+            <>
+              <div className="section-title-row">
+                <div><h2>Backups & recovery</h2><p>Verify a backup, confirm it belongs to the exact selected library, and restore with a safety backup first.</p></div>
+                <span className="subtle-label">RECOVERY GATE</span>
+              </div>
+              <div className="reconcile-backup">
+                <label htmlFor="restore-target">Restore target library</label>
+                <select id="restore-target" value={restoreTargetLibrary} onChange={(event) => {
+                  setRestoreTargetLibrary(event.target.value);
+                  setRestorePreview(null);
+                  setRestoreConfirmation("");
+                  setRestoreReport(null);
+                }}>
+                  <option value="library_a">Library A — {libraryA || "not selected"}</option>
+                  <option value="library_b">Library B — {libraryB || "not selected"}</option>
+                </select>
+                <label htmlFor="restore-backup-path">Verified backup directory</label>
+                <input id="restore-backup-path" value={restoreBackupPath} onChange={(event) => {
+                  setRestoreBackupPath(event.target.value);
+                  setRestorePreview(null);
+                  setRestoreConfirmation("");
+                  setRestoreReport(null);
+                }} placeholder="Full path to music_backup_… directory" />
+                <label htmlFor="restore-safety-root">Separate safety-backup location (outside both libraries)</label>
+                <input id="restore-safety-root" value={restoreSafetyRoot} onChange={(event) => {
+                  setRestoreSafetyRoot(event.target.value);
+                  setRestorePreview(null);
+                  setRestoreConfirmation("");
+                  setRestoreReport(null);
+                }} placeholder="Choose a separate folder or drive…" />
+                <small>Restore requires a valid backup manifest whose recorded source path exactly matches the chosen target. Older backups without source identity are rejected rather than guessed.</small>
+                <button className="primary-button" disabled={!hasScan || !restoreBackupPath.trim() || !restoreSafetyRoot.trim() || restorePreviewing || restoreExecuting || !isTauri()} onClick={() => void buildRestorePreview()}>
+                  {restorePreviewing ? "Verifying backup…" : "Verify backup & preview restore"}
+                </button>
+              </div>
+              {restorePreview && (
+                <div className="preview-result">
+                  <div className="error-notice">
+                    <strong>Restore replaces the selected library's current contents.</strong>
+                    <p>{String(restorePreview.warning ?? "A verified safety backup will be created before restoration.")}</p>
+                  </div>
+                  <div className="metrics-grid">
+                    <div className="metric-card"><span>Backup status</span><strong>{String(restorePreview.status)}</strong><small>manifest and file hashes verified</small></div>
+                    <div className="metric-card"><span>Files in backup</span><strong>{Number(restorePreview.file_count ?? 0)}</strong><small>{Number(restorePreview.size_bytes ?? 0).toLocaleString()} bytes</small></div>
+                  </div>
+                  <p><strong>Backup ID:</strong> <code>{String(restorePreview.backup_id)}</code></p>
+                  <p><strong>Backup:</strong> <code>{String(restorePreview.backup_path)}</code></p>
+                  <p><strong>Exact target:</strong> <code>{String(restorePreview.target_path)}</code></p>
+                  <p><strong>Safety backup location:</strong> <code>{String(restorePreview.safety_backup_root)}</code></p>
+                  <div className="reconcile-backup safe-execution-panel">
+                    <label htmlFor="restore-confirmation">Type <strong>RESTORE</strong> exactly to replace the target library contents</label>
+                    <input id="restore-confirmation" value={restoreConfirmation} onChange={(event) => setRestoreConfirmation(event.target.value)} placeholder="RESTORE" autoComplete="off" />
+                    <button className="primary-button" disabled={restoreConfirmation !== "RESTORE" || restoreExecuting || !restorePreview.preview_token || !isTauri()} onClick={() => void executeRestore()}>
+                      {restoreExecuting ? "Creating safety backup & restoring…" : "Create verified safety backup & restore"}
+                    </button>
+                    <small>The preview token binds the backup manifest, target library, and safety-backup location. Any change requires a new verification preview.</small>
+                  </div>
+                </div>
+              )}
+              {restoreReport && (
+                <div className="preview-result execution-report">
+                  <h3>Restore execution report</h3>
+                  <p><strong>Restored:</strong> {restoreReport.restored ? "Yes" : "No"}</p>
+                  <p><strong>Recovery completed:</strong> {restoreReport.recovered ? "Yes" : "No"}</p>
+                  <p><strong>Safety backup:</strong> <code>{String(restoreReport.safety_backup ?? "not reported")}</code></p>
+                  {restoreReport.error && <div className="error-notice">{String(restoreReport.error)}</div>}
+                  {!restoreReport.recovered && <div className="error-notice"><strong>Manual recovery may be required.</strong> Preserve the target and safety backup; do not retry automatically.</div>}
+                  <details><summary>Full restore report</summary><pre>{JSON.stringify(restoreReport, null, 2)}</pre></details>
+                </div>
+              )}
+              {error && <div className="error-notice" role="alert">{error}</div>}
+            </>
+          )}
+
           {active === "mirror" && (
             <>
               <div className="section-title-row">
@@ -783,7 +940,7 @@ function App() {
             </>
           )}
 
-          {active !== "library" && active !== "compare" && active !== "review" && active !== "mirror" && (
+          {active !== "library" && active !== "compare" && active !== "review" && active !== "mirror" && active !== "backups" && (
             <div className="empty-section"><div className="empty-icon" aria-hidden="true">{section.mark}</div><h2>{section.label} is waiting for its safety workflow</h2><p>{section.hint}. This section remains unavailable until review, freshness validation, verified backups, and recovery behavior are connected to the Python engine.</p><button className="secondary-button" onClick={() => setActive("library")}>Back to library workspace</button></div>
           )}
 
