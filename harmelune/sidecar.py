@@ -1,6 +1,6 @@
 """Restricted JSONL bridge for the desktop UI.
 
-Only explicitly enumerated scan, review, dry-run, and gated Safe/Reconcile
+Only explicitly enumerated scan, review, dry-run, and gated Safe/Reconcile/Mirror
 execution commands are exposed. Both execution paths require an exact preview
 token and typed confirmation, validate backup locations against both libraries,
 and use the existing verified-backup transaction engine. Reconcile applies only
@@ -152,6 +152,25 @@ def _reconcile_preview_token(plan_id: str, decisions: dict[str, ReconcileDecisio
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
+
+def _mirror_preview_token(plan_id: str, master_library: str, backup_root: Path, preview: DryRunResult) -> str:
+    """Bind Mirror approval to direction, backup root, and every planned mutation."""
+    payload = {
+        "plan_id": plan_id,
+        "master_library": master_library,
+        "backup_root": str(backup_root.resolve(strict=False)),
+        "operations": [
+            {"kind": op.kind.value, "source": str(op.source) if op.source is not None else None,
+             "destination": str(op.destination)}
+            for op in preview.operations
+        ],
+        "skipped": preview.skipped,
+        "blocked": preview.blocked,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _require_string(params: dict[str, object], name: str) -> str:
     value = params.get(name)
     if not isinstance(value, str) or not value.strip():
@@ -209,7 +228,7 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
         result: dict[str, object] = {
             "engine": "harmelune-python",
             "protocol_version": PROTOCOL_VERSION,
-            "capabilities": ["scan", "list_tracks", "preview_safe", "preview_reconcile", "execute_safe", "execute_reconcile", "shutdown"],
+            "capabilities": ["scan", "list_tracks", "preview_safe", "preview_reconcile", "execute_safe", "execute_reconcile", "preview_mirror", "execute_mirror", "shutdown"],
             "read_only": False,
         }
         return ({"version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True, "result": result}, False)
@@ -411,13 +430,85 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
             "result": {"execution": report.to_dict(), "mutations_enabled": True},
         }, False)
 
+    if command == "preview_mirror":
+        plan_id = _require_string(params, "plan_id")
+        master_library = _require_string(params, "master_library")
+        backup_root_raw = _require_string(params, "backup_root")
+        stored = _PLANS.get(plan_id)
+        if stored is None:
+            raise ProtocolError("PLAN_NOT_FOUND", "This scan is no longer available. Scan both libraries again.")
+        bundle, rows = stored
+        if not _summary(bundle, rows)["safe_to_preview"]:
+            raise ProtocolError("SCAN_INCOMPLETE", "Mirror preview is blocked because one or both scans are incomplete or have errors.")
+        try:
+            direction = select_master(bundle.library_a, bundle.library_b, master_library)
+            backup_root = validate_backup_root(backup_root_raw, (bundle.library_a, bundle.library_b))
+            preview = preview_workflow(bundle.plan, SyncMode.MIRROR, direction)
+        except StalePlanError as exc:
+            raise ProtocolError("STALE_PLAN", f"{exc} Rescan both libraries before previewing again.") from exc
+        except (OSError, ValueError) as exc:
+            raise ProtocolError("PREVIEW_BLOCKED", str(exc)) from exc
+        return ({
+            "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
+            "result": {
+                "mode": "mirror", "status": preview.status,
+                "preview_token": _mirror_preview_token(plan_id, master_library, backup_root, preview),
+                "operations": [
+                    {"kind": op.kind.value, "source": str(op.source) if op.source is not None else None,
+                     "destination": str(op.destination)}
+                    for op in preview.operations
+                ],
+                "skipped": preview.skipped, "blocked": preview.blocked,
+                "operation_count": len(preview.operations),
+                "deletion_count": sum(op.kind.value == "delete" for op in preview.operations),
+                "replacement_count": sum(op.kind.value == "replace" for op in preview.operations),
+                "mutations_enabled": False,
+            },
+        }, False)
+
+    if command == "execute_mirror":
+        plan_id = _require_string(params, "plan_id")
+        master_library = _require_string(params, "master_library")
+        backup_root_raw = _require_string(params, "backup_root")
+        supplied_token = _require_string(params, "preview_token")
+        if params.get("confirmation") != "MIRROR":
+            raise ProtocolError("CONFIRMATION_REQUIRED", 'Mirror execution requires exact confirmation text: MIRROR.')
+        stored = _PLANS.get(plan_id)
+        if stored is None:
+            raise ProtocolError("PLAN_NOT_FOUND", "This scan is no longer available. Scan both libraries again.")
+        bundle, rows = stored
+        if not _summary(bundle, rows)["safe_to_preview"]:
+            raise ProtocolError("SCAN_INCOMPLETE", "Mirror execution is blocked because one or both scans are incomplete or have errors.")
+        try:
+            direction = select_master(bundle.library_a, bundle.library_b, master_library)
+            backup_root = validate_backup_root(backup_root_raw, (bundle.library_a, bundle.library_b))
+            preview = preview_workflow(bundle.plan, SyncMode.MIRROR, direction)
+            expected_token = _mirror_preview_token(plan_id, master_library, backup_root, preview)
+            if not hmac.compare_digest(supplied_token, expected_token):
+                raise ProtocolError("PREVIEW_MISMATCH", "The reviewed Mirror operations, direction, or backup location changed. Build a fresh preview and confirm again.")
+            if preview.status != "SUCCESS" or preview.blocked:
+                raise ProtocolError("PREVIEW_BLOCKED", "Mirror execution is blocked until all unresolved matches are reviewed and the preview has no blockers.")
+            if any(operation.kind.value not in {"copy", "replace", "delete"} for operation in preview.operations):
+                raise ProtocolError("UNSAFE_OPERATION", "Mirror contains an unsupported operation.")
+            report = execute_workflow(bundle.plan, SyncMode.MIRROR, direction, backup_root, confirmation="MIRROR")
+        except StalePlanError as exc:
+            raise ProtocolError("STALE_PLAN", f"{exc} Rescan both libraries before executing.") from exc
+        except ProtocolError:
+            raise
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise ProtocolError("EXECUTION_BLOCKED", str(exc)) from exc
+        return ({
+            "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
+            "result": {"execution": report.to_dict(), "mutations_enabled": True},
+        }, False)
+
     if command == "shutdown":
         return ({
             "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
             "result": {"stopped": True},
         }, True)
 
-    raise ProtocolError("UNKNOWN_COMMAND", "Supported commands are hello, ping, scan, list_tracks, preview_safe, preview_reconcile, execute_safe, execute_reconcile, and shutdown.")
+    raise ProtocolError("UNKNOWN_COMMAND", "Supported commands are hello, ping, scan, list_tracks, preview_safe, preview_reconcile, execute_safe, execute_reconcile, preview_mirror, execute_mirror, and shutdown.")
 
 
 def main() -> int:
