@@ -371,3 +371,37 @@ def test_safe_execution_rejects_backup_inside_either_library_and_tampered_previe
     assert not (a / "backups").exists()
     assert not (b / "backups").exists()
     assert not (b / "Only A.wav").exists()
+
+
+def test_safe_execution_rejects_stale_plan_without_creating_backup(tmp_path: Path, monkeypatch):
+    from harmelune import sidecar
+
+    a, b = tmp_path / "Library A", tmp_path / "Library B"
+    a.mkdir()
+    b.mkdir()
+    write_wav(a / "Only A.wav", 80)
+    write_wav(b / "Only B.wav", 83)
+    backup_root = tmp_path / "backups"
+    monkeypatch.setattr(sidecar, "_PLANS", {})
+    scan, _ = sidecar._handle(
+        json.loads(request("scan", "scan", {"library_a": str(a), "library_b": str(b)})),
+        lambda _event: None,
+    )
+    plan_id = scan["result"]["plan_id"]
+    preview, _ = sidecar._handle(
+        json.loads(request("preview", "preview_safe", {"plan_id": plan_id, "master_library": "library_a"})),
+        lambda _event: None,
+    )
+    write_wav(a / "added-after-preview.wav", 91)
+
+    try:
+        sidecar._handle(json.loads(request("execute", "execute_safe", {
+            "plan_id": plan_id, "master_library": "library_a", "backup_root": str(backup_root),
+            "preview_token": preview["result"]["preview_token"], "confirmation": "APPLY SAFE",
+        })), lambda _event: None)
+    except sidecar.ProtocolError as exc:
+        assert exc.code == "STALE_PLAN"
+    else:
+        raise AssertionError("Execution must reject a plan after either library changes.")
+    assert not backup_root.exists()
+    assert not (b / "Only A.wav").exists()
