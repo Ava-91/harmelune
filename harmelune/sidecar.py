@@ -1,11 +1,12 @@
 """Restricted JSONL bridge for the desktop UI.
 
-Only explicitly enumerated scan, review, dry-run, and gated Safe-execution
-commands are exposed. Safe execution requires an exact preview token and
-confirmation, validates the backup location against both libraries, and uses
-the existing verified-backup transaction engine. Standard output is reserved
-for one JSON object per line; diagnostics go to standard error. The desktop
-frontend cannot execute shell commands or arbitrary Python code.
+Only explicitly enumerated scan, review, dry-run, and gated Safe/Reconcile
+execution commands are exposed. Both execution paths require an exact preview
+token and typed confirmation, validate backup locations against both libraries,
+and use the existing verified-backup transaction engine. Reconcile applies only
+explicit decisions and never deletes files. Standard output is reserved for one
+JSON object per line; diagnostics go to standard error. The desktop frontend
+cannot execute shell commands or arbitrary Python code.
 """
 from __future__ import annotations
 
@@ -138,6 +139,19 @@ def _safe_preview_token(plan_id: str, master_library: str, preview: DryRunResult
     return hashlib.sha256(encoded).hexdigest()
 
 
+
+def _reconcile_preview_token(plan_id: str, decisions: dict[str, ReconcileDecision], backup_root: Path, preview: DryRunResult) -> str:
+    payload = {
+        "plan_id": plan_id,
+        "decisions": {key: value.value for key, value in sorted(decisions.items())},
+        "backup_root": str(backup_root.resolve(strict=False)),
+        "operations": [{"kind": op.kind.value, "source": str(op.source) if op.source is not None else None, "destination": str(op.destination)} for op in preview.operations],
+        "skipped": preview.skipped,
+        "blocked": preview.blocked,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
 def _require_string(params: dict[str, object], name: str) -> str:
     value = params.get(name)
     if not isinstance(value, str) or not value.strip():
@@ -195,7 +209,7 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
         result: dict[str, object] = {
             "engine": "harmelune-python",
             "protocol_version": PROTOCOL_VERSION,
-            "capabilities": ["scan", "list_tracks", "preview_safe", "preview_reconcile", "execute_safe", "shutdown"],
+            "capabilities": ["scan", "list_tracks", "preview_safe", "preview_reconcile", "execute_safe", "execute_reconcile", "shutdown"],
             "read_only": False,
         }
         return ({"version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True, "result": result}, False)
@@ -335,7 +349,8 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
                 raise ProtocolError("INVALID_ARGUMENT", f"Unsupported Reconcile decision for {key!r}.")
             decisions[key] = allowed[value]
         try:
-            preview = preview_workflow(bundle.plan, SyncMode.RECONCILE, select_master(bundle.library_a, bundle.library_b, "library_a"), decisions=decisions, backup_root=backup_root)
+            normalized_backup_root = validate_backup_root(backup_root, (bundle.library_a, bundle.library_b))
+            preview = preview_workflow(bundle.plan, SyncMode.RECONCILE, select_master(bundle.library_a, bundle.library_b, "library_a"), decisions=decisions, backup_root=normalized_backup_root)
         except StalePlanError as exc:
             raise ProtocolError("STALE_PLAN", f"{exc} Rescan both libraries before previewing again.") from exc
         except (OSError, ValueError) as exc:
@@ -345,19 +360,64 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
         return ({
             "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
             "result": {
-                "mode": "reconcile", "status": preview.status,
+                "mode": "reconcile", "status": preview.status, "preview_token": _reconcile_preview_token(plan_id, decisions, normalized_backup_root, preview),
                 "operations": [{"kind": op.kind.value, "source": str(op.source) if op.source is not None else None, "destination": str(op.destination)} for op in preview.operations],
                 "skipped": preview.skipped, "blocked": preview.blocked,
                 "operation_count": len(preview.operations), "mutations_enabled": False,
             },
         }, False)
+    if command == "execute_reconcile":
+        plan_id = _require_string(params, "plan_id")
+        backup_root_raw = _require_string(params, "backup_root")
+        supplied_token = _require_string(params, "preview_token")
+        if params.get("confirmation") != "APPLY RECONCILE":
+            raise ProtocolError("CONFIRMATION_REQUIRED", 'Reconcile execution requires exact confirmation text: APPLY RECONCILE.')
+        raw_decisions = params.get("decisions")
+        if not isinstance(raw_decisions, dict):
+            raise ProtocolError("INVALID_ARGUMENT", "decisions must be an object mapping review item keys to explicit decisions.")
+        stored = _PLANS.get(plan_id)
+        if stored is None:
+            raise ProtocolError("PLAN_NOT_FOUND", "This scan is no longer available. Scan both libraries again.")
+        bundle, rows = stored
+        if not _summary(bundle, rows)["safe_to_preview"]:
+            raise ProtocolError("SCAN_INCOMPLETE", "Reconcile execution is blocked because one or both scans are incomplete or have errors.")
+        allowed = {decision.value: decision for decision in ReconcileDecision}
+        decisions: dict[str, ReconcileDecision] = {}
+        for key, value in raw_decisions.items():
+            if not isinstance(key, str) or not key or len(key) > 32768:
+                raise ProtocolError("INVALID_ARGUMENT", "Each decision key must be a non-empty string.")
+            if not isinstance(value, str) or value not in allowed:
+                raise ProtocolError("INVALID_ARGUMENT", f"Unsupported Reconcile decision for {key!r}.")
+            decisions[key] = allowed[value]
+        try:
+            normalized_backup_root = validate_backup_root(backup_root_raw, (bundle.library_a, bundle.library_b))
+            preview = preview_workflow(bundle.plan, SyncMode.RECONCILE, select_master(bundle.library_a, bundle.library_b, "library_a"), decisions=decisions, backup_root=normalized_backup_root)
+            expected_token = _reconcile_preview_token(plan_id, decisions, normalized_backup_root, preview)
+            if not hmac.compare_digest(supplied_token, expected_token):
+                raise ProtocolError("PREVIEW_MISMATCH", "The reviewed Reconcile plan, decisions, or backup location changed. Build a fresh preview and confirm it again.")
+            if preview.status != "SUCCESS" or preview.blocked:
+                raise ProtocolError("PREVIEW_BLOCKED", "Reconcile execution is blocked until every required item has an explicit valid decision and the preview has no blockers.")
+            if any(operation.kind.value not in {"copy", "replace"} for operation in preview.operations):
+                raise ProtocolError("UNSAFE_OPERATION", "Reconcile permits only explicit copy or replace operations; delete is never allowed.")
+            report = execute_workflow(bundle.plan, SyncMode.RECONCILE, select_master(bundle.library_a, bundle.library_b, "library_a"), normalized_backup_root, decisions=decisions)
+        except StalePlanError as exc:
+            raise ProtocolError("STALE_PLAN", f"{exc} Rescan both libraries before executing.") from exc
+        except ProtocolError:
+            raise
+        except (OSError, ValueError) as exc:
+            raise ProtocolError("EXECUTION_BLOCKED", str(exc)) from exc
+        return ({
+            "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
+            "result": {"execution": report.to_dict(), "mutations_enabled": True},
+        }, False)
+
     if command == "shutdown":
         return ({
             "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
             "result": {"stopped": True},
         }, True)
 
-    raise ProtocolError("UNKNOWN_COMMAND", "Supported commands are hello, ping, scan, list_tracks, preview_safe, preview_reconcile, execute_safe, and shutdown.")
+    raise ProtocolError("UNKNOWN_COMMAND", "Supported commands are hello, ping, scan, list_tracks, preview_safe, preview_reconcile, execute_safe, execute_reconcile, and shutdown.")
 
 
 def main() -> int:
