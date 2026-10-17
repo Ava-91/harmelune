@@ -17,7 +17,7 @@ type Track = { path: string; name: string; title: string; artist: string; album:
 type ComparisonRow = { category: string; label: string; a: Track | null; b: Track | null; confidence?: number; confirmed?: boolean; metadata_conflict?: boolean; artwork_conflict?: boolean; reasons?: string[] };
 type ScanSummary = { counts: Record<string, number>; library_a: string; library_b: string; tracks_a: number; tracks_b: number; errors_a: string[]; errors_b: string[]; enumeration_complete_a: boolean; enumeration_complete_b: boolean; unsupported_audio_a: number; unsupported_audio_b: number; safe_to_preview: boolean };
 type ScanResult = { plan_id: string; summary: ScanSummary; page: { rows: ComparisonRow[]; total: number; has_more: boolean } };
-type SafePreview = { mode: string; status: string; operations: { kind: string; source: string | null; destination: string }[]; skipped: string[]; blocked: string[]; operation_count: number; mutations_enabled: boolean };
+type SafePreview = { mode: string; status: string; preview_token?: string; operations: { kind: string; source: string | null; destination: string }[]; skipped: string[]; blocked: string[]; operation_count: number; mutations_enabled: boolean };
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 async function engineRequest(command: string, params: Record<string, unknown> = {}): Promise<EngineResponse> {
@@ -53,6 +53,10 @@ function App() {
   const [masterLibrary, setMasterLibrary] = useState("library_a");
   const [preview, setPreview] = useState<SafePreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
+  const [safeBackupRoot, setSafeBackupRoot] = useState("");
+  const [safeConfirmation, setSafeConfirmation] = useState("");
+  const [safeExecuting, setSafeExecuting] = useState(false);
+  const [executionReport, setExecutionReport] = useState<Record<string, any> | null>(null);
   const [reconcileDecisions, setReconcileDecisions] = useState<Record<string, string>>({});
   const [backupRoot, setBackupRoot] = useState("");
   const [reconcilePreview, setReconcilePreview] = useState<SafePreview | null>(null);
@@ -147,6 +151,8 @@ function App() {
       setPreview(null);
       setReconcilePreview(null);
       setReconcileDecisions({});
+      setSafeConfirmation("");
+      setExecutionReport(null);
       setStalePlan(false);
       setRows([]);
     } catch (reason) {
@@ -176,6 +182,8 @@ function App() {
       setPreview(null);
       setReconcilePreview(null);
       setReconcileDecisions({});
+      setSafeConfirmation("");
+      setExecutionReport(null);
       setStalePlan(false);
       setReviewPage(0);
       setRows(result.page.rows);
@@ -217,6 +225,44 @@ function App() {
       setPreview(null);
     } finally {
       setPreviewing(false);
+    }
+  };
+
+
+  const executeSafe = async () => {
+    if (!planId || !preview?.preview_token || !summary || !safeBackupRoot.trim()) {
+      setError("Build a fresh Safe preview and choose a separate backup location first.");
+      return;
+    }
+    if (safeConfirmation !== "APPLY SAFE") {
+      setError('Type APPLY SAFE exactly to authorize the reviewed copy-only operation.');
+      return;
+    }
+    if (preview.status !== "SUCCESS" || preview.blocked.length || preview.operations.some((operation) => operation.kind !== "copy")) {
+      setError("Execution blocked: the current preview is not an unblocked copy-only plan.");
+      return;
+    }
+    setError("");
+    setSafeExecuting(true);
+    try {
+      const response = await engineRequest("execute_safe", {
+        plan_id: planId,
+        master_library: masterLibrary,
+        backup_root: safeBackupRoot.trim(),
+        confirmation: safeConfirmation,
+        preview_token: preview.preview_token,
+      });
+      if (!response.ok) {
+        setStalePlan(response.error?.code === "STALE_PLAN" || response.error?.code === "PLAN_NOT_FOUND" || response.error?.code === "PREVIEW_MISMATCH");
+        throw new Error(response.error?.message ?? "Safe execution was blocked.");
+      }
+      setExecutionReport((response.result as Record<string, any>).execution);
+      setPreview(null);
+      setSafeConfirmation("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setSafeExecuting(false);
     }
   };
 
@@ -406,7 +452,33 @@ function App() {
               </div>
               {!summary && <div className="table-empty">Scan both libraries first. No preview can be built without a current scan.</div>}
               {summary && !summary.safe_to_preview && <div className="error-notice">Preview blocked: resolve scan errors or incomplete enumeration, then scan again.</div>}
+
               {preview && <PreviewPanel preview={preview} />}
+              {preview && (
+                <div className="reconcile-backup safe-execution-panel">
+                  <h3>Safe execution — final safety gate</h3>
+                  <p>Only the exact preview below can be applied. Harmelune rechecks freshness, requires a verified backup outside both libraries, and permits copy-only operations. Existing files are never overwritten or deleted.</p>
+                  <label htmlFor="safe-backup-root">Separate backup location (outside Library A and Library B)</label>
+                  <input id="safe-backup-root" value={safeBackupRoot} onChange={(event) => setSafeBackupRoot(event.target.value)} placeholder="For example, a separate backup drive/folder…" />
+                  <label htmlFor="safe-confirmation">Type <strong>APPLY SAFE</strong> to authorize execution</label>
+                  <input id="safe-confirmation" value={safeConfirmation} onChange={(event) => setSafeConfirmation(event.target.value)} placeholder="APPLY SAFE" autoComplete="off" />
+                  <button className="primary-button" disabled={!hasScan || !preview.preview_token || preview.status !== "SUCCESS" || preview.blocked.length > 0 || preview.operations.some((operation) => operation.kind !== "copy") || !safeBackupRoot.trim() || safeConfirmation !== "APPLY SAFE" || safeExecuting || !isTauri()} onClick={() => void executeSafe()}>{safeExecuting ? "Creating verified backup and copying…" : "Create verified backup & apply Safe copies"}</button>
+                  <small>This will modify Library B or Library A according to the selected direction. It is intentionally a separate, explicit action.</small>
+                </div>
+              )}
+              {executionReport && (
+                <div className="preview-result execution-report">
+                  <h3>Safe execution report</h3>
+                  <div className="metrics-grid">
+                    <div className="metric-card"><span>Final status</span><strong>{String(executionReport.final_status)}</strong></div>
+                    <div className="metric-card"><span>Copied</span><strong>{Number(executionReport.succeeded ?? 0)}</strong></div>
+                    <div className="metric-card"><span>Skipped</span><strong>{Number(executionReport.skipped ?? 0)}</strong></div>
+                    <div className="metric-card"><span>Failed</span><strong>{Number(executionReport.failed ?? 0)}</strong></div>
+                  </div>
+                  <p>Verified backup(s): {(executionReport.backups ?? []).join(", ") || "No backup was needed because there were no copy operations."}</p>
+                  <details><summary>Full execution report</summary><pre>{JSON.stringify(executionReport, null, 2)}</pre></details>
+                </div>
+              )}
               <div className="section-title-row reconcile-heading"><div><h2>Reconcile review</h2><p>Choose a decision for each unmatched track and each uncertain or conflicting match. No choice is applied automatically.</p></div><span className="subtle-label">{Object.keys(reconcileDecisions).length} DECISIONS SAVED</span></div>
               <div className="reconcile-intro">
                 <span>{summary ? `${summary.counts.a_only + summary.counts.b_only + summary.counts.fuzzy + summary.counts.conflicts} item(s) require an explicit decision across the scan` : "Scan libraries to load review items."}</span>
