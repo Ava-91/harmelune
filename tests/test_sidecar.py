@@ -372,6 +372,96 @@ def test_mirror_preview_rejects_backup_root_inside_either_library(tmp_path: Path
 
 
 
+
+def test_restore_requires_matching_library_identity_verified_backup_and_exact_confirmation(tmp_path: Path, monkeypatch):
+    from harmelune import sidecar
+    from harmelune.backup import create_verified_backup
+
+    a, b = tmp_path / "Library A", tmp_path / "Library B"
+    a.mkdir()
+    b.mkdir()
+    original = a / "Original.wav"
+    write_wav(original, 80)
+    write_wav(b / "Other.wav", 83)
+    backup_root = tmp_path / "backups"
+    safety_root = tmp_path / "safety-backups"
+    backup = create_verified_backup(a, backup_root).path
+    original_bytes = original.read_bytes()
+    original.write_bytes(b"changed after backup")
+    (a / "extra.txt").write_text("must disappear after restore", encoding="utf-8")
+    monkeypatch.setattr(sidecar, "_PLANS", {})
+    scan, _ = sidecar._handle(
+        json.loads(request("scan-restore", "scan", {"library_a": str(a), "library_b": str(b)})),
+        lambda _event: None,
+    )
+    plan_id = scan["result"]["plan_id"]
+    preview, _ = sidecar._handle(json.loads(request("preview-restore", "preview_restore", {
+        "plan_id": plan_id, "backup_path": str(backup), "target_library": "library_a",
+        "safety_backup_root": str(safety_root),
+    })), lambda _event: None)
+    assert preview["ok"] is True
+    assert preview["result"]["mutations_enabled"] is False
+    assert preview["result"]["target_path"] == str(a.resolve())
+    token = preview["result"]["preview_token"]
+
+    for confirmation, supplied_token, expected_code in [
+        ("restore", token, "CONFIRMATION_REQUIRED"),
+        ("RESTORE", "bad-token", "PREVIEW_MISMATCH"),
+    ]:
+        try:
+            sidecar._handle(json.loads(request("blocked-restore", "execute_restore", {
+                "plan_id": plan_id, "backup_path": str(backup), "target_library": "library_a",
+                "safety_backup_root": str(safety_root), "preview_token": supplied_token,
+                "confirmation": confirmation,
+            })), lambda _event: None)
+        except sidecar.ProtocolError as exc:
+            assert exc.code == expected_code
+        else:
+            raise AssertionError(f"Restore must reject invalid approval: {expected_code}")
+    assert original.read_bytes() == b"changed after backup"
+    assert (a / "extra.txt").exists()
+    assert not safety_root.exists()
+
+    result, _ = sidecar._handle(json.loads(request("apply-restore", "execute_restore", {
+        "plan_id": plan_id, "backup_path": str(backup), "target_library": "library_a",
+        "safety_backup_root": str(safety_root), "preview_token": token, "confirmation": "RESTORE",
+    })), lambda _event: None)
+    assert result["ok"] is True
+    assert result["result"]["restored"] is True
+    assert result["result"]["recovered"] is True
+    assert original.read_bytes() == original_bytes
+    assert not (a / "extra.txt").exists()
+    assert result["result"]["safety_backup"]
+    assert len(list(safety_root.iterdir())) == 1
+
+
+def test_restore_preview_rejects_backup_from_different_library(tmp_path: Path, monkeypatch):
+    from harmelune import sidecar
+    from harmelune.backup import create_verified_backup
+
+    a, b = tmp_path / "Library A", tmp_path / "Library B"
+    a.mkdir()
+    b.mkdir()
+    write_wav(a / "A.wav", 80)
+    write_wav(b / "B.wav", 83)
+    backup = create_verified_backup(a, tmp_path / "backups").path
+    monkeypatch.setattr(sidecar, "_PLANS", {})
+    scan, _ = sidecar._handle(
+        json.loads(request("scan-restore-identity", "scan", {"library_a": str(a), "library_b": str(b)})),
+        lambda _event: None,
+    )
+    try:
+        sidecar._handle(json.loads(request("wrong-target", "preview_restore", {
+            "plan_id": scan["result"]["plan_id"], "backup_path": str(backup),
+            "target_library": "library_b", "safety_backup_root": str(tmp_path / "safety"),
+        })), lambda _event: None)
+    except sidecar.ProtocolError as exc:
+        assert exc.code == "RESTORE_PREVIEW_BLOCKED"
+    else:
+        raise AssertionError("Restore must reject a backup whose source identity does not match the target.")
+
+
+
 def test_safe_execution_requires_exact_confirmation_and_verified_preview(tmp_path: Path, monkeypatch):
     from harmelune import sidecar
 
