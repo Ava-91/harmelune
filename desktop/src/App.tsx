@@ -35,7 +35,7 @@ function PreviewPanel({ preview }: { preview: SafePreview }) {
         <div className="metric-card"><span>Blocked</span><strong>{preview.blocked.length}</strong><small>requires attention</small></div>
         <div className="metric-card"><span>Engine status</span><strong>{preview.status}</strong><small>{preview.mode} dry-run result</small></div>
       </div>
-      <div className="notice"><div className="notice-icon">i</div><div><strong>Preview only — execution is still disabled</strong><p>No copy, replace, delete, backup, or restore action is performed by this preview.</p></div></div>
+      <div className="notice"><div className="notice-icon">i</div><div><strong>Preview only — nothing has changed yet</strong><p>This preview itself performs no copy, replace, delete, backup, or restore action.</p></div></div>
       <h3 className="preview-list-title">Planned operations {preview.operations.length > 20 ? "(first 20 shown)" : ""}</h3>
       {preview.operations.length ? <ul className="preview-list">{preview.operations.slice(0, 20).map((operation, index) => <li key={index}><span className="operation-kind">{operation.kind}</span><span className="operation-path">{operation.source ?? "—"}<span>→ {operation.destination}</span></span></li>)}</ul> : <div className="table-empty">No operations are planned for this preview.</div>}
       {preview.blocked.length > 0 && <div className="error-notice"><strong>Blocked items</strong><ul>{preview.blocked.slice(0, 20).map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
@@ -356,12 +356,12 @@ function App() {
               <h1>{active === "library" ? "Your music, in harmony." : section.label}</h1>
               <p className="page-subtitle">{active === "library" ? "A calmer, clearer way to compare and care for your music libraries." : section.hint + ". The existing Python engine remains authoritative."}</p>
             </div>
-            <div className="read-only-pill"><span className="status-dot muted" /> READ-ONLY PHASE</div>
+            <div className="read-only-pill"><span className="status-dot muted" /> SAFE EXECUTION GATED</div>
           </div>
 
           <div className="notice" role="status">
             <div className="notice-icon" aria-hidden="true">i</div>
-            <div><strong>File-changing actions are still locked</strong><p>Scanning, explicit review decisions, and Safe/Reconcile dry-run previews are available. File execution, backup creation, restore, and Mirror remain locked until their separate safety gates are implemented and tested.</p></div>
+            <div><strong>Safe execution is available behind an explicit safety gate</strong><p>Safe copies require a fresh preview, exact APPLY SAFE confirmation, and a verified backup outside both libraries. Reconcile execution, restore, and Mirror remain locked for separate safety reviews.</p></div>
           </div>
 
           {active === "library" && (
