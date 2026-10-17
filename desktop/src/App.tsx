@@ -395,38 +395,6 @@ function App() {
               <div className="preview-controls">
                 <label htmlFor="master-library">Copy source (master library)</label>
                 <select id="master-library" value={masterLibrary} onChange={(event) => { setMasterLibrary(event.target.value); setPreview(null); }}>
-                  <option value="library_a">Library A → Library B</option>
-                  <option value="library_b">Library B → Library A</option>
-                </select>
-                <button className="primary-button" disabled={!hasScan || !summary?.safe_to_preview || previewing || !isTauri()} onClick={() => void buildSafePreview()}>{previewing ? "Building preview…" : "Build safe-mode preview"}</button>
-              </div>
-              {!summary && <div className="table-empty">Scan both libraries first. No preview can be built without a current scan.</div>}
-              {summary && !summary.safe_to_preview && <div className="error-notice">Preview blocked: resolve scan errors or incomplete enumeration, then scan again.</div>}
-              {preview && (
-                <div className="preview-result">
-                  <div className="metrics-grid">
-                    <div className="metric-card"><span>Planned copies</span><strong>{preview.operation_count}</strong><small>no files changed</small></div>
-                    <div className="metric-card"><span>Skipped</span><strong>{preview.skipped.length}</strong><small>already present or excluded</small></div>
-                    <div className="metric-card"><span>Blocked</span><strong>{preview.blocked.length}</strong><small>requires attention</small></div>
-                    <div className="metric-card"><span>Engine status</span><strong>{preview.status}</strong><small>Python dry-run result</small></div>
-                  </div>
-                  <div className="notice"><div className="notice-icon">i</div><div><strong>Preview only — execution is still disabled</strong><p>This list is informational. No copy, replace, delete, backup, or restore command is available in this desktop phase.</p></div></div>
-                  <h3 className="preview-list-title">Planned operations {preview.operations.length > 20 ? "(first 20 shown)" : ""}</h3>
-                  {preview.operations.length ? <ul className="preview-list">{preview.operations.slice(0, 20).map((operation, index) => <li key={index}><span className="operation-kind">{operation.kind}</span><span className="operation-path">{operation.source ?? "—"}<span>→ {operation.destination}</span></span></li>)}</ul> : <div className="table-empty">No copy operations are needed for this direction.</div>}
-                  {preview.blocked.length > 0 && <div className="error-notice"><strong>Blocked items</strong><ul>{preview.blocked.slice(0, 10).map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
-                  {preview.skipped.length > 0 && <div className="notice"><div className="notice-icon">i</div><div><strong>Skipped items</strong><ul>{preview.skipped.slice(0, 10).map((item, index) => <li key={index}>{item}</li>)}</ul></div></div>}
-                </div>
-              )}
-              {error && <div className="error-notice" role="alert">{error}</div>}
-            </>
-          )}
-
-          {active === "review" && (
-            <>
-              <div className="section-title-row"><div><h2>Safe-mode dry run</h2><p>Preview the Python engine's planned copy operations. This never writes to either library.</p></div><span className="subtle-label">NO FILE CHANGES</span></div>
-              <div className="preview-controls">
-                <label htmlFor="master-library">Copy source (master library)</label>
-                <select id="master-library" value={masterLibrary} onChange={(event) => { setMasterLibrary(event.target.value); setPreview(null); }}>
                   <option value="library_a">Library A → Library B</option><option value="library_b">Library B → Library A</option>
                 </select>
                 <button className="primary-button" disabled={!hasScan || !summary?.safe_to_preview || previewing || !isTauri()} onClick={() => void buildSafePreview()}>{previewing ? "Building preview…" : "Build safe-mode preview"}</button>
