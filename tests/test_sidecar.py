@@ -277,6 +277,101 @@ def test_preview_reports_stale_plan_after_library_changes(tmp_path: Path, monkey
         raise AssertionError("A stale plan must not produce a preview.")
 
 
+
+def test_mirror_preview_lists_deletions_and_execution_requires_exact_token_confirmation(tmp_path: Path, monkeypatch):
+    from harmelune import sidecar
+
+    a, b = tmp_path / "Library A", tmp_path / "Library B"
+    a.mkdir()
+    b.mkdir()
+    write_wav(a / "Keep from A.wav", 80)
+    write_wav(b / "Delete from B.wav", 83)
+    backup_root = tmp_path / "mirror-backups"
+    before_a = {p.relative_to(a).as_posix(): p.read_bytes() for p in a.rglob("*") if p.is_file()}
+    before_b = {p.relative_to(b).as_posix(): p.read_bytes() for p in b.rglob("*") if p.is_file()}
+    monkeypatch.setattr(sidecar, "_PLANS", {})
+    scan, _ = sidecar._handle(
+        json.loads(request("scan", "scan", {"library_a": str(a), "library_b": str(b)})),
+        lambda _event: None,
+    )
+    plan_id = scan["result"]["plan_id"]
+    preview, _ = sidecar._handle(
+        json.loads(request("preview-mirror", "preview_mirror", {
+            "plan_id": plan_id, "master_library": "library_a", "backup_root": str(backup_root),
+        })),
+        lambda _event: None,
+    )
+
+    assert preview["ok"] is True
+    assert preview["result"]["mode"] == "mirror"
+    assert preview["result"]["mutations_enabled"] is False
+    operations = preview["result"]["operations"]
+    assert {operation["kind"] for operation in operations} == {"copy", "delete"}
+    assert any(operation["kind"] == "delete" and operation["destination"] == str(b / "Delete from B.wav") for operation in operations)
+    token = preview["result"]["preview_token"]
+
+    for confirmation, supplied_token, expected_code in [
+        ("mirror", token, "CONFIRMATION_REQUIRED"),
+        ("MIRROR", "tampered-preview-token", "PREVIEW_MISMATCH"),
+    ]:
+        try:
+            sidecar._handle(json.loads(request("blocked-mirror", "execute_mirror", {
+                "plan_id": plan_id, "master_library": "library_a", "backup_root": str(backup_root),
+                "preview_token": supplied_token, "confirmation": confirmation,
+            })), lambda _event: None)
+        except sidecar.ProtocolError as exc:
+            assert exc.code == expected_code
+        else:
+            raise AssertionError(f"Mirror must reject invalid approval: {expected_code}")
+    assert {p.relative_to(a).as_posix(): p.read_bytes() for p in a.rglob("*") if p.is_file()} == before_a
+    assert {p.relative_to(b).as_posix(): p.read_bytes() for p in b.rglob("*") if p.is_file()} == before_b
+    assert not backup_root.exists()
+
+    result, _ = sidecar._handle(
+        json.loads(request("apply-mirror", "execute_mirror", {
+            "plan_id": plan_id, "master_library": "library_a", "backup_root": str(backup_root),
+            "preview_token": token, "confirmation": "MIRROR",
+        })),
+        lambda _event: None,
+    )
+    assert result["ok"] is True
+    report = result["result"]["execution"]
+    assert report["mode"] == "mirror"
+    assert report["final_status"] == "SUCCESS"
+    assert (b / "Keep from A.wav").read_bytes() == (a / "Keep from A.wav").read_bytes()
+    assert not (b / "Delete from B.wav").exists()
+    backup_dirs = list(backup_root.iterdir())
+    assert len(backup_dirs) == 1
+    assert (backup_dirs[0] / "Delete from B.wav").read_bytes() == before_b["Delete from B.wav"]
+    assert {p.relative_to(a).as_posix(): p.read_bytes() for p in a.rglob("*") if p.is_file()} == before_a
+
+
+def test_mirror_preview_rejects_backup_root_inside_either_library(tmp_path: Path, monkeypatch):
+    from harmelune import sidecar
+
+    a, b = tmp_path / "Library A", tmp_path / "Library B"
+    a.mkdir()
+    b.mkdir()
+    write_wav(a / "Only A.wav", 80)
+    write_wav(b / "Only B.wav", 83)
+    monkeypatch.setattr(sidecar, "_PLANS", {})
+    scan, _ = sidecar._handle(
+        json.loads(request("scan", "scan", {"library_a": str(a), "library_b": str(b)})),
+        lambda _event: None,
+    )
+    plan_id = scan["result"]["plan_id"]
+    for unsafe_root in (a / "backup", b / "backup"):
+        try:
+            sidecar._handle(json.loads(request("unsafe-mirror", "preview_mirror", {
+                "plan_id": plan_id, "master_library": "library_a", "backup_root": str(unsafe_root),
+            })), lambda _event: None)
+        except sidecar.ProtocolError as exc:
+            assert exc.code == "PREVIEW_BLOCKED"
+        else:
+            raise AssertionError("Mirror must reject backup roots inside either library.")
+
+
+
 def test_safe_execution_requires_exact_confirmation_and_verified_preview(tmp_path: Path, monkeypatch):
     from harmelune import sidecar
 
