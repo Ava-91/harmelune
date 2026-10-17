@@ -25,6 +25,7 @@ from .models import SyncMode
 from .reconcile import ReconcileDecision
 from .services import ScanBundle, execute_workflow, preview_workflow, scan_libraries
 from .path_safety import validate_backup_root
+from .backup import MANIFEST_NAME, BackupVerificationError, restore_verified_backup, verify_backup_contents
 
 PROTOCOL_VERSION = 1
 MAX_REQUEST_BYTES = 1_048_576
@@ -171,6 +172,18 @@ def _mirror_preview_token(plan_id: str, master_library: str, backup_root: Path, 
     return hashlib.sha256(encoded).hexdigest()
 
 
+
+def _restore_preview_token(backup: Path, target: Path, safety_root: Path, backup_id: str) -> str:
+    payload = {
+        "backup": str(backup.resolve()),
+        "target": str(target.resolve()),
+        "safety_root": str(safety_root.resolve(strict=False)),
+        "backup_id": backup_id,
+        "manifest_sha256": hashlib.sha256((backup / MANIFEST_NAME).read_bytes()).hexdigest(),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
 def _require_string(params: dict[str, object], name: str) -> str:
     value = params.get(name)
     if not isinstance(value, str) or not value.strip():
@@ -228,7 +241,7 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
         result: dict[str, object] = {
             "engine": "harmelune-python",
             "protocol_version": PROTOCOL_VERSION,
-            "capabilities": ["scan", "list_tracks", "preview_safe", "preview_reconcile", "execute_safe", "execute_reconcile", "preview_mirror", "execute_mirror", "shutdown"],
+            "capabilities": ["scan", "list_tracks", "preview_safe", "preview_reconcile", "execute_safe", "execute_reconcile", "preview_mirror", "execute_mirror", "preview_restore", "execute_restore", "shutdown"],
             "read_only": False,
         }
         return ({"version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True, "result": result}, False)
@@ -502,13 +515,104 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
             "result": {"execution": report.to_dict(), "mutations_enabled": True},
         }, False)
 
+    if command == "preview_restore":
+        plan_id = _require_string(params, "plan_id")
+        backup_raw = _require_string(params, "backup_path")
+        target_key = _require_string(params, "target_library")
+        safety_root_raw = _require_string(params, "safety_backup_root")
+        stored = _PLANS.get(plan_id)
+        if stored is None:
+            raise ProtocolError("PLAN_NOT_FOUND", "Scan the intended libraries first so the restore target can be verified.")
+        bundle, _rows_for_plan = stored
+        libraries = (bundle.library_a, bundle.library_b)
+        if target_key == "library_a":
+            target = bundle.library_a
+        elif target_key == "library_b":
+            target = bundle.library_b
+        else:
+            raise ProtocolError("INVALID_ARGUMENT", "target_library must be library_a or library_b.")
+        try:
+            backup = Path(backup_raw).expanduser().resolve(strict=True)
+            if not backup.is_dir():
+                raise ValueError("Backup path must point to a backup directory.")
+            validate_backup_root(backup, libraries)
+            safety_root = validate_backup_root(safety_root_raw, libraries)
+            if backup == safety_root or backup.is_relative_to(safety_root) or safety_root.is_relative_to(backup):
+                raise ValueError("Safety backup location must be separate from the selected restore backup.")
+            info = verify_backup_contents(backup)
+            manifest = json.loads((backup / MANIFEST_NAME).read_text(encoding="utf-8"))
+            source_path = manifest.get("source_path")
+            if not isinstance(source_path, str) or Path(source_path).resolve(strict=False) != target.resolve():
+                raise ValueError("Backup source identity does not match the selected library. Choose a backup made from this exact library path.")
+            token = _restore_preview_token(backup, target, safety_root, info.backup_id)
+        except (OSError, ValueError, BackupVerificationError) as exc:
+            raise ProtocolError("RESTORE_PREVIEW_BLOCKED", str(exc)) from exc
+        return ({
+            "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
+            "result": {
+                "mode": "restore", "status": "READY", "backup_path": str(backup),
+                "backup_id": info.backup_id, "file_count": info.file_count, "size_bytes": info.size_bytes,
+                "target_library": target_key, "target_path": str(target),
+                "safety_backup_root": str(safety_root), "preview_token": token,
+                "mutations_enabled": False,
+                "warning": "Restore replaces the target library contents with this backup. A verified safety backup is created first.",
+            },
+        }, False)
+
+    if command == "execute_restore":
+        plan_id = _require_string(params, "plan_id")
+        backup_raw = _require_string(params, "backup_path")
+        target_key = _require_string(params, "target_library")
+        safety_root_raw = _require_string(params, "safety_backup_root")
+        supplied_token = _require_string(params, "preview_token")
+        if params.get("confirmation") != "RESTORE":
+            raise ProtocolError("CONFIRMATION_REQUIRED", 'Restore requires exact confirmation text: RESTORE.')
+        stored = _PLANS.get(plan_id)
+        if stored is None:
+            raise ProtocolError("PLAN_NOT_FOUND", "Scan the intended libraries first so the restore target can be verified.")
+        bundle, _rows_for_plan = stored
+        libraries = (bundle.library_a, bundle.library_b)
+        if target_key == "library_a":
+            target = bundle.library_a
+        elif target_key == "library_b":
+            target = bundle.library_b
+        else:
+            raise ProtocolError("INVALID_ARGUMENT", "target_library must be library_a or library_b.")
+        try:
+            backup = Path(backup_raw).expanduser().resolve(strict=True)
+            validate_backup_root(backup, libraries)
+            safety_root = validate_backup_root(safety_root_raw, libraries)
+            if backup == safety_root or backup.is_relative_to(safety_root) or safety_root.is_relative_to(backup):
+                raise ValueError("Safety backup location must be separate from the selected restore backup.")
+            info = verify_backup_contents(backup)
+            manifest = json.loads((backup / MANIFEST_NAME).read_text(encoding="utf-8"))
+            source_path = manifest.get("source_path")
+            if not isinstance(source_path, str) or Path(source_path).resolve(strict=False) != target.resolve():
+                raise ValueError("Backup source identity does not match the selected library path.")
+            expected_token = _restore_preview_token(backup, target, safety_root, info.backup_id)
+            if not hmac.compare_digest(supplied_token, expected_token):
+                raise ProtocolError("PREVIEW_MISMATCH", "Restore preview changed. Verify the backup and build a fresh preview.")
+            result = restore_verified_backup(backup, target, safety_root, confirmation="RESTORE")
+        except ProtocolError:
+            raise
+        except (OSError, ValueError, RuntimeError, BackupVerificationError) as exc:
+            raise ProtocolError("RESTORE_FAILED", str(exc)) from exc
+        return ({
+            "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
+            "result": {
+                "mode": "restore", "restored": result.restored, "recovered": result.recovered,
+                "safety_backup": str(result.safety_backup) if result.safety_backup else None,
+                "error": result.error, "mutations_enabled": True,
+            },
+        }, False)
+
     if command == "shutdown":
         return ({
             "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
             "result": {"stopped": True},
         }, True)
 
-    raise ProtocolError("UNKNOWN_COMMAND", "Supported commands are hello, ping, scan, list_tracks, preview_safe, preview_reconcile, execute_safe, execute_reconcile, preview_mirror, execute_mirror, and shutdown.")
+    raise ProtocolError("UNKNOWN_COMMAND", "Supported commands are hello, ping, scan, list_tracks, preview_safe, preview_reconcile, execute_safe, execute_reconcile, preview_mirror, execute_mirror, preview_restore, execute_restore, and shutdown.")
 
 
 def main() -> int:
