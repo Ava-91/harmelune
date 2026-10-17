@@ -89,10 +89,11 @@ def _load_manifest(backup: Path) -> tuple[str, dict[str, dict[str, int | str]]]:
         raise BackupVerificationError(f"Backup manifest is invalid: {manifest_path}") from exc
 
 
-def _write_manifest(root: Path, backup_id: str, entries: dict[str, dict[str, int | str]]) -> None:
+def _write_manifest(root: Path, backup_id: str, entries: dict[str, dict[str, int | str]], source_path: Path) -> None:
     payload = {
         "format": 1,
         "backup_id": backup_id,
+        "source_path": str(source_path.resolve()),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "files": entries,
     }
@@ -144,7 +145,7 @@ def create_verified_backup(source: Path, backup_root: Path) -> BackupInfo:
     destination = backup_root / f"music_backup_{backup_id}"
     shutil.copytree(source, destination)
     entries = _manifest_for(source)
-    _write_manifest(destination, backup_id, entries)
+    _write_manifest(destination, backup_id, entries, source)
     try:
         return verify_backup(source, destination)
     except Exception:
