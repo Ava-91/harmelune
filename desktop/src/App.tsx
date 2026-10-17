@@ -534,7 +534,7 @@ function App() {
                   const trackB = row.b;
                   const title = trackA && trackB ? `${trackA.title} ↔ ${trackB.title}` : (trackA ?? trackB)?.title ?? "Unknown track";
                   const detail = trackA && trackB ? `${trackA.artist} / ${trackB.artist}` : (trackA ?? trackB)?.artist ?? "";
-                  const matchNeedsDecision = row.category === "fuzzy" || row.category === "conflicts";
+                  const matchNeedsDecision = row.category === "fuzzy" || row.category === "conflicts" || Boolean(row.metadata_conflict) || Boolean(row.artwork_conflict);
                   return (
                     <article className="review-item" key={key || index}>
                       <div className="review-item-main">
