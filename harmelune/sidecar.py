@@ -1,9 +1,8 @@
 """Restricted JSONL bridge for the desktop UI.
 
-Only read-only discovery commands are exposed in this initial protocol version.
+Only read-only scan, review, and dry-run preview commands are exposed.
 Standard output is reserved for one JSON object per line; diagnostics go to
-standard error. The desktop frontend cannot ask this process to execute shell
-commands or arbitrary Python code.
+standard error. The desktop frontend cannot ask this process to execute shell commands or arbitrary Python code.
 """
 from __future__ import annotations
 
