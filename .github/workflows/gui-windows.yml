@@ -1,0 +1,55 @@
+name: Windows Tkinter GUI tests
+
+on:
+  pull_request:
+    paths:
+      - "app.py"
+      - "harmelune/**"
+      - "tests/**"
+      - "requirements*.txt"
+      - ".github/workflows/gui-windows.yml"
+  push:
+    branches: [main]
+    paths:
+      - "app.py"
+      - "harmelune/**"
+      - "tests/**"
+      - "requirements*.txt"
+      - ".github/workflows/gui-windows.yml"
+  workflow_dispatch:
+
+jobs:
+  tkinter-gui:
+    name: Native Tkinter integration (Windows / Python 3.11)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install application and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Exercise native comparison workspace widgets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          python -m pytest -vv tests/test_tkinter_integration.py --junitxml=artifacts/tkinter-gui-results.xml
+        env:
+          PYTHONFAULTHANDLER: "1"
+
+      - name: Upload GUI test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tkinter-gui-test-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/tkinter-gui-results.xml
+          if-no-files-found: warn
