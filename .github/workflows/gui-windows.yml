@@ -91,6 +91,7 @@ jobs:
           New-Item -ItemType Directory -Force artifacts | Out-Null
           python -m pytest -vv tests/test_tkinter_integration.py --junitxml=artifacts/tkinter-gui-results.xml
         env:
+          HARMELUNE_RUN_TKINTER_INTEGRATION: "1"
           PYTHONFAULTHANDLER: "1"
 
       - name: Upload GUI test report
