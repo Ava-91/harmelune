@@ -480,11 +480,12 @@ class HarmeluneApp(tk.Tk):
             and f"{match.library_a.path}" not in self.review_choices
             for match in self.plan.matches
         ) if self.plan else 0
+        decided_conflicts = max(0, conflict_total - unresolved_conflicts)
         self.result_summary_var.set(
             f"Showing {len(visible)} of {len(searched_rows)} matching rows · "
             f"{len(total_rows)} in selected category · "
-            f"{unresolved_fuzzy} uncertain match(es) · "
-            f"{unresolved_conflicts} conflict(s) awaiting a decision"
+            f"{unresolved_fuzzy} uncertain match(es) still need review · "
+            f"{decided_conflicts}/{conflict_total} conflict decisions recorded"
         )
 
     def show_health(self) -> None:
