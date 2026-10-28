@@ -482,7 +482,7 @@ class HarmeluneApp(tk.Tk):
         ) if self.plan else 0
         decided_conflicts = max(0, conflict_total - unresolved_conflicts)
         self.result_summary_var.set(
-            f"Showing {len(visible)} of {len(searched_rows)} matching rows · "
+            f"Showing {len(visible)} row(s) · {len(searched_rows)} search match(es) · "
             f"{len(total_rows)} in selected category · "
             f"{unresolved_fuzzy} uncertain match(es) still need review · "
             f"{decided_conflicts}/{conflict_total} conflict decisions recorded"
