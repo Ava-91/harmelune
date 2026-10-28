@@ -21,7 +21,7 @@ on:
 jobs:
   tkinter-gui:
     name: Native Tkinter integration (Windows / Python 3.11)
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 10
     steps:
       - name: Check out repository
@@ -30,7 +30,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.11.9"
           cache: pip
 
       - name: Configure Tcl/Tk libraries
