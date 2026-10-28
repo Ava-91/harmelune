@@ -300,8 +300,8 @@ class HarmeluneApp(tk.Tk):
         self.last_dry_run = None
         self.active_filter = "all"
         if hasattr(self, "tree"):
-            for item in self.tree.get_children():
-                self.tree.delete(item)
+            self.tree.delete(*self.tree.get_children())
+        self.result_summary_var.set("Compare libraries to see results.")
         if hasattr(self, "summary_buttons"):
             for button in self.summary_buttons.values():
                 button.configure(state="disabled")
