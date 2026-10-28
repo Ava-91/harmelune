@@ -33,6 +33,24 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      - name: Configure Tcl/Tk libraries
+        shell: pwsh
+        run: |
+          $pythonRoot = $env:pythonLocation
+          if (-not $pythonRoot) {
+            throw "actions/setup-python did not provide the Python installation path"
+          }
+          $tclLibrary = Join-Path $pythonRoot "tcl\tcl8.6"
+          $tkLibrary = Join-Path $pythonRoot "tcl\tk8.6"
+          if (-not (Test-Path -LiteralPath (Join-Path $tclLibrary "init.tcl"))) {
+            throw "The configured Python installation is missing Tcl's init.tcl: $tclLibrary"
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $tkLibrary "tk.tcl"))) {
+            throw "The configured Python installation is missing Tk's tk.tcl: $tkLibrary"
+          }
+          "TCL_LIBRARY=$tclLibrary" >> $env:GITHUB_ENV
+          "TK_LIBRARY=$tkLibrary" >> $env:GITHUB_ENV
+
       - name: Install application and test dependencies
         run: |
           python -m pip install --upgrade pip
