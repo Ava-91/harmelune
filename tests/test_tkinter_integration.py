@@ -6,13 +6,17 @@ files.
 """
 from __future__ import annotations
 
+import os
 import sys
 from types import SimpleNamespace
 
 import pytest
 
-if sys.platform != "win32":
-    pytest.skip("Native Tk integration runs on the Windows GUI runner", allow_module_level=True)
+if sys.platform != "win32" or os.environ.get("HARMELUNE_RUN_TKINTER_INTEGRATION") != "1":
+    pytest.skip(
+        "Native Tk integration runs only in the dedicated Windows GUI workflow",
+        allow_module_level=True,
+    )
 
 import app as app_module
 
