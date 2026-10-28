@@ -56,6 +56,7 @@ def gui(monkeypatch):
     # Health summaries depend on completed scans; keep this integration focused
     # on the real filter widgets and real result-table renderer.
     window._refresh_health = lambda: window._refresh_result_table()
+    window._refresh_result_table()
     window.update_idletasks()
     window.update()
     yield window
