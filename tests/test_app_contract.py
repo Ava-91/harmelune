@@ -33,3 +33,25 @@ def test_app_module_imports_without_constructing_a_window():
     import app
 
     assert hasattr(app, "HarmeluneApp")
+
+
+def test_escape_during_scan_requests_cancellation_without_clearing_search():
+    import app
+
+    class SearchVar:
+        def get(self):
+            return "active query"
+
+    class Window:
+        scan_active = True
+        comparison_query_var = SearchVar()
+        cancellation_requested = False
+
+        def cancel_scan(self):
+            self.cancellation_requested = True
+
+    window = Window()
+
+    assert app.HarmeluneApp._clear_comparison_search(window) == "break"
+    assert window.cancellation_requested
+    assert window.comparison_query_var.get() == "active query"

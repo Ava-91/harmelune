@@ -500,8 +500,11 @@ class HarmeluneApp(tk.Tk):
         labels = {"all": "all results", "exact": "exact matches", "a_only": "tracks only in Library A", "b_only": "tracks only in Library B", "fuzzy": "uncertain matches", "conflicts": "conflicts"}
         self.status_var.set(f"Showing {labels.get(category, 'selected results')}.")
 
-    def _clear_comparison_search(self, _event=None) -> str:
+    def _clear_comparison_search(self, _event=None) -> str | None:
         """Clear the comparison search and restore the visible results."""
+        if self.scan_active:
+            self.cancel_scan()
+            return "break"
         if self.comparison_query_var.get():
             self.comparison_query_var.set("")
         else:
