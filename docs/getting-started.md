@@ -111,9 +111,11 @@ Once setup is complete:
 1. Start a scan of both libraries.
 2. Wait for scanning to finish.
 3. Review matched tracks, library-only tracks, conflicts, and fuzzy matches.
-4. Inspect the proposed operations.
-5. Run a **dry run**.
-6. Read the resulting plan before applying anything.
+4. Use the results search field to find a title, artist, category, or displayed path. Search only changes which rows are visible; it does not alter match decisions or the synchronization plan.
+5. Use the sort menu to order results by category or track details. The category buttons continue to filter the result set, and the summary shows visible counts plus uncertain matches and conflict decisions still needing review.
+6. Inspect the proposed operations.
+7. Run a **dry run**.
+8. Read the resulting plan before applying anything.
 
 A dry run is a preview. It is not a backup and it does not replace reviewing important changes.
 

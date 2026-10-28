@@ -1,0 +1,103 @@
+name: Windows Tkinter GUI tests
+
+on:
+  pull_request:
+    paths:
+      - "app.py"
+      - "harmelune/**"
+      - "tests/**"
+      - "requirements*.txt"
+      - ".github/workflows/gui-windows.yml"
+  push:
+    branches: [main]
+    paths:
+      - "app.py"
+      - "harmelune/**"
+      - "tests/**"
+      - "requirements*.txt"
+      - ".github/workflows/gui-windows.yml"
+  workflow_dispatch:
+
+jobs:
+  tkinter-gui:
+    name: Native Tkinter integration (Windows / Python 3.11)
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11.9"
+          cache: pip
+
+      - name: Configure Tcl/Tk libraries
+        shell: pwsh
+        run: |
+          $pythonRoot = (python -c "import sys; print(sys.base_prefix)").Trim()
+          if (-not $pythonRoot) {
+            throw "The active Python interpreter did not provide its installation path"
+          }
+          $tclLibrary = Join-Path $pythonRoot "tcl\tcl8.6"
+          $tkLibrary = Join-Path $pythonRoot "tcl\tk8.6"
+          if (-not (Test-Path -LiteralPath (Join-Path $tclLibrary "init.tcl"))) {
+            throw "The configured Python installation is missing Tcl's init.tcl: $tclLibrary"
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $tkLibrary "tk.tcl"))) {
+            throw "The configured Python installation is missing Tk's tk.tcl: $tkLibrary"
+          }
+          "TCL_LIBRARY=$tclLibrary" >> $env:GITHUB_ENV
+          "TK_LIBRARY=$tkLibrary" >> $env:GITHUB_ENV
+
+      - name: Verify Tcl/Tk runtime
+        shell: pwsh
+        run: |
+          python -c @'
+          import os
+          import pathlib
+          import tkinter
+
+          tcl_library = pathlib.Path(os.environ["TCL_LIBRARY"])
+          tk_library = pathlib.Path(os.environ["TK_LIBRARY"])
+          for library_file in (tcl_library / "init.tcl", tk_library / "tk.tcl"):
+              library_file.read_bytes()
+              print(f"Readable Tcl/Tk script: {library_file}")
+
+          interpreter = tkinter.Tcl()
+          print("Tkinter module:", tkinter.__file__)
+          print("Tcl version:", interpreter.eval("info patchlevel"))
+          print("Tcl library:", interpreter.eval("info library"))
+
+          for attempt in range(5):
+              window = tkinter.Tk()
+              try:
+                  window.withdraw()
+                  window.update_idletasks()
+              finally:
+                  window.destroy()
+              print(f"Tk root creation/destruction {attempt + 1}/5 passed")
+          '@
+
+      - name: Install application and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Exercise native comparison workspace widgets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          python -m pytest -vv tests/test_tkinter_integration.py --junitxml=artifacts/tkinter-gui-results.xml
+        env:
+          HARMELUNE_RUN_TKINTER_INTEGRATION: "1"
+          PYTHONFAULTHANDLER: "1"
+
+      - name: Upload GUI test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tkinter-gui-test-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/tkinter-gui-results.xml
+          if-no-files-found: warn
