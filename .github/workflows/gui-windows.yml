@@ -36,9 +36,9 @@ jobs:
       - name: Configure Tcl/Tk libraries
         shell: pwsh
         run: |
-          $pythonRoot = $env:pythonLocation
+          $pythonRoot = (python -c "import sys; print(sys.base_prefix)").Trim()
           if (-not $pythonRoot) {
-            throw "actions/setup-python did not provide the Python installation path"
+            throw "The active Python interpreter did not provide its installation path"
           }
           $tclLibrary = Join-Path $pythonRoot "tcl\tcl8.6"
           $tkLibrary = Join-Path $pythonRoot "tcl\tk8.6"
@@ -54,8 +54,31 @@ jobs:
       - name: Verify Tcl/Tk runtime
         shell: pwsh
         run: |
-          python -c "import tkinter; print('Tkinter module:', tkinter.__file__); print('Tcl version:', tkinter.Tcl().eval('info patchlevel'))"
-          python -c "import sys, pathlib; root = pathlib.Path(sys.base_prefix) / 'tcl'; print('Tcl root:', root); print('init.tcl found:', list(root.rglob('init.tcl'))[:5])"
+          python -c @'
+          import os
+          import pathlib
+          import tkinter
+
+          tcl_library = pathlib.Path(os.environ["TCL_LIBRARY"])
+          tk_library = pathlib.Path(os.environ["TK_LIBRARY"])
+          for library_file in (tcl_library / "init.tcl", tk_library / "tk.tcl"):
+              library_file.read_bytes()
+              print(f"Readable Tcl/Tk script: {library_file}")
+
+          interpreter = tkinter.Tcl()
+          print("Tkinter module:", tkinter.__file__)
+          print("Tcl version:", interpreter.eval("info patchlevel"))
+          print("Tcl library:", interpreter.eval("info library"))
+
+          for attempt in range(5):
+              window = tkinter.Tk()
+              try:
+                  window.withdraw()
+                  window.update_idletasks()
+              finally:
+                  window.destroy()
+              print(f"Tk root creation/destruction {attempt + 1}/5 passed")
+          '@
 
       - name: Install application and test dependencies
         run: |
