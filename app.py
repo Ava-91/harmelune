@@ -227,7 +227,7 @@ class HarmeluneApp(tk.Tk):
         self.tree.bind("<Return>", lambda _event: self._show_selected_result_details())
         self.comparison_query_var.trace_add("write", lambda *_: self._refresh_result_table())
         sort_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_result_table())
-        search_entry.bind("<Escape>", lambda _event: self.comparison_query_var.set(""))
+        search_entry.bind("<Escape>", self._clear_comparison_search)
         progress_row = ttk.Frame(frame)
         progress_row.pack(fill="x", pady=(6, 0))
         self.progress = ttk.Progressbar(progress_row, mode="indeterminate", style="Horizontal.TProgressbar")
@@ -499,6 +499,14 @@ class HarmeluneApp(tk.Tk):
         self._refresh_health()
         labels = {"all": "all results", "exact": "exact matches", "a_only": "tracks only in Library A", "b_only": "tracks only in Library B", "fuzzy": "uncertain matches", "conflicts": "conflicts"}
         self.status_var.set(f"Showing {labels.get(category, 'selected results')}.")
+
+    def _clear_comparison_search(self, _event=None) -> str:
+        """Clear the comparison search and restore the visible results."""
+        if self.comparison_query_var.get():
+            self.comparison_query_var.set("")
+        else:
+            self._refresh_result_table()
+        return "break"
 
     def clear_result_filters(self) -> None:
         """Clear both the category filter and free-text search."""

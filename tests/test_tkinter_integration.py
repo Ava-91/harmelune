@@ -87,6 +87,8 @@ def test_search_entry_filters_real_tree_and_escape_clears_it(gui):
     assert _visible_details(gui) == [ROWS[1][3]]
     assert "1 row(s)" in gui.result_summary_var.get()
 
+    search.focus_set()
+    gui.update()
     search.event_generate("<Escape>")
     gui.update()
 
