@@ -31,7 +31,7 @@ from harmelune.scanner import scan_library
 from harmelune.settings import Settings, SettingsStore, default_config_dir
 from harmelune.services import execute_workflow, preview_workflow, scan_libraries
 from harmelune.sync import execute_safe
-from harmelune.ui_state import comparison_counts, filter_comparison_rows, workflow_step
+from harmelune.ui_state import comparison_counts, filter_comparison_rows, search_comparison_rows, sort_comparison_rows, workflow_step
 from harmelune.health_ui import open_health_dashboard
 from harmelune.history import HistoryCorruptError, SyncHistoryStore
 from harmelune.ui_theme import configure_theme
@@ -54,6 +54,9 @@ class HarmeluneApp(tk.Tk):
         self.review_choices: dict[str, ConflictChoice] = {}
         self.health = None
         self.active_filter = "all"
+        self.comparison_query_var = tk.StringVar(value="")
+        self.comparison_sort_var = tk.StringVar(value="Original order")
+        self.result_summary_var = tk.StringVar(value="Compare libraries to see results.")
         self.preview_ready = False
         self.last_dry_run = None
         self.scan_errors = 0
@@ -194,6 +197,19 @@ class HarmeluneApp(tk.Tk):
         ttk.Button(advanced, text="Clear result filter", command=lambda: self.filter_results("all")).pack(side="right")
         results = ttk.LabelFrame(frame, text="03  RESULTS", padding=8)
         results.pack(fill="both", expand=True)
+        review_tools = ttk.Frame(results)
+        review_tools.pack(fill="x", pady=(0, 6))
+        ttk.Label(review_tools, text="Search").pack(side="left")
+        search_entry = ttk.Entry(review_tools, textvariable=self.comparison_query_var, width=30)
+        search_entry.pack(side="left", padx=(6, 12), fill="x", expand=True)
+        ttk.Label(review_tools, text="Sort").pack(side="left")
+        sort_combo = ttk.Combobox(
+            review_tools, textvariable=self.comparison_sort_var,
+            values=("Original order", "Category", "Details A–Z", "Details Z–A"),
+            state="readonly", width=16,
+        )
+        sort_combo.pack(side="left", padx=(6, 0))
+        ttk.Label(results, textvariable=self.result_summary_var, style="Muted.TLabel").pack(anchor="w", pady=(0, 6))
         result_table = ttk.Frame(results)
         result_table.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(result_table, columns=("category", "count", "details"), show="headings", height=10, selectmode="browse")
@@ -209,6 +225,9 @@ class HarmeluneApp(tk.Tk):
         result_table.rowconfigure(0, weight=1)
         result_table.columnconfigure(0, weight=1)
         self.tree.bind("<Return>", lambda _event: self._show_selected_result_details())
+        self.comparison_query_var.trace_add("write", lambda *_: self._refresh_result_table())
+        sort_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_result_table())
+        search_entry.bind("<Escape>", lambda _event: self.comparison_query_var.set(""))
         progress_row = ttk.Frame(frame)
         progress_row.pack(fill="x", pady=(6, 0))
         self.progress = ttk.Progressbar(progress_row, mode="indeterminate", style="Horizontal.TProgressbar")
@@ -430,19 +449,43 @@ class HarmeluneApp(tk.Tk):
         labels = {"exact": "Exact matches", "a_only": "Only in A", "b_only": "Only in B", "fuzzy": "Review fuzzy", "conflicts": "Conflicts"}
         for key, button in self.summary_buttons.items():
             button.configure(text=f"{labels[key]}\n{counts[key]}", state="normal")
-        for item in self.tree.get_children():
-            self.tree.delete(item)
         if self.active_filter != "all" and not counts.get(self.active_filter, 0):
             self.active_filter = "all"
-        visible = filter_comparison_rows(rows, self.active_filter)
-        for category, label, count, details in visible:
-            self.tree.insert("", "end", values=(label, count, details), tags=(category,))
+        self._refresh_result_table(rows)
         self.tree.tag_configure("fuzzy", foreground="#FFD080")
         self.tree.tag_configure("conflicts", foreground="#F49BA6")
         self.tree.tag_configure("exact", foreground="#8BD8C2")
         self._update_workflow()
         if hasattr(self, "health_button"):
             self.health_button.configure(state="normal")
+
+    def _refresh_result_table(self, rows: list[tuple[str, str, str, str]] | None = None) -> None:
+        """Refresh only the visible rows; searching never rescans or changes decisions."""
+        if rows is None:
+            rows = self._comparison_rows()
+        total_rows = filter_comparison_rows(rows, self.active_filter)
+        searched_rows = search_comparison_rows(total_rows, self.comparison_query_var.get())
+        visible = sort_comparison_rows(searched_rows, self.comparison_sort_var.get())
+        self.tree.delete(*self.tree.get_children())
+        for category, label, count, details in visible:
+            self.tree.insert("", "end", values=(label, count, details), tags=(category,))
+
+        fuzzy_total = sum(not match.confirmed for match in self.plan.matches) if self.plan else 0
+        conflict_total = sum(
+            match.metadata_conflict or match.artwork_conflict for match in self.plan.matches
+        ) if self.plan else 0
+        unresolved_fuzzy = fuzzy_total
+        unresolved_conflicts = sum(
+            (match.metadata_conflict or match.artwork_conflict)
+            and f"{match.library_a.path}" not in self.review_choices
+            for match in self.plan.matches
+        ) if self.plan else 0
+        self.result_summary_var.set(
+            f"Showing {len(visible)} of {len(searched_rows)} matching rows · "
+            f"{len(total_rows)} in selected category · "
+            f"{unresolved_fuzzy} uncertain match(es) · "
+            f"{unresolved_conflicts} conflict(s) awaiting a decision"
+        )
 
     def show_health(self) -> None:
         if self.health is None:
