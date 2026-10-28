@@ -194,7 +194,7 @@ class HarmeluneApp(tk.Tk):
         ttk.Button(advanced, text="Profiles…", command=self.open_profiles).pack(side="left", padx=(7, 0))
         ttk.Button(advanced, text="Artwork manager…", command=self.open_artwork_manager).pack(side="left", padx=(7, 0))
         ttk.Button(advanced, text="Relink missing libraries…", command=self.relink_libraries).pack(side="left", padx=(7, 0))
-        ttk.Button(advanced, text="Clear result filter", command=lambda: self.filter_results("all")).pack(side="right")
+        ttk.Button(advanced, text="Clear result filters", command=self.clear_result_filters).pack(side="right")
         results = ttk.LabelFrame(frame, text="03  RESULTS", padding=8)
         results.pack(fill="both", expand=True)
         review_tools = ttk.Frame(results)
@@ -499,6 +499,14 @@ class HarmeluneApp(tk.Tk):
         self._refresh_health()
         labels = {"all": "all results", "exact": "exact matches", "a_only": "tracks only in Library A", "b_only": "tracks only in Library B", "fuzzy": "uncertain matches", "conflicts": "conflicts"}
         self.status_var.set(f"Showing {labels.get(category, 'selected results')}.")
+
+    def clear_result_filters(self) -> None:
+        """Clear both the category filter and free-text search."""
+        self.active_filter = "all"
+        if self.comparison_query_var.get():
+            self.comparison_query_var.set("")
+        self._refresh_health()
+        self.status_var.set("Showing all comparison results.")
 
     def _workflow_title(self) -> str:
         return workflow_step(
