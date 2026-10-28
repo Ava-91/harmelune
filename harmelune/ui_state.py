@@ -25,6 +25,34 @@ def filter_comparison_rows(
     return [row for row in rows if row[0] == category]
 
 
+def search_comparison_rows(
+    rows: Sequence[tuple[str, object, object, object]], query: str = ""
+) -> list[tuple[str, object, object, object]]:
+    """Search comparison rows across category, label, count, and details."""
+    needle = query.casefold().strip()
+    if not needle:
+        return list(rows)
+    return [
+        row for row in rows
+        if needle in " ".join(str(value) for value in row).casefold()
+    ]
+
+
+def sort_comparison_rows(
+    rows: Sequence[tuple[str, object, object, object]], sort_by: str = "Original order"
+) -> list[tuple[str, object, object, object]]:
+    """Sort comparison rows without mutating the original sequence."""
+    if sort_by == "Original order":
+        return list(rows)
+    if sort_by == "Category":
+        return sorted(rows, key=lambda row: (str(row[0]).casefold(), str(row[1]).casefold(), str(row[3]).casefold()))
+    if sort_by == "Details A–Z":
+        return sorted(rows, key=lambda row: str(row[3]).casefold())
+    if sort_by == "Details Z–A":
+        return sorted(rows, key=lambda row: str(row[3]).casefold(), reverse=True)
+    raise ValueError(f"Unknown comparison sort: {sort_by}")
+
+
 def workflow_step(
     library_a_selected: bool,
     library_b_selected: bool,
