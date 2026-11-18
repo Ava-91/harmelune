@@ -703,21 +703,103 @@ def test_health_protocol_returns_current_scan_health(tmp_path: Path, monkeypatch
         raise AssertionError("Health must reject an expired scan plan.")
 
 
-def test_history_is_session_scoped_newest_first_and_capped():
+def test_history_persists_across_reads_and_is_capped(tmp_path: Path, monkeypatch):
     from harmelune import sidecar
 
-    original = sidecar._HISTORY[:]
+    monkeypatch.setattr(sidecar, "default_config_dir", lambda: tmp_path / "app-data")
+    for index in range(sidecar.MAX_HISTORY_ITEMS + 2):
+        assert sidecar._record_history("safe", {"index": index}) is True
+
+    response, _ = sidecar._handle(json.loads(request("history-1", "history")), lambda _event: None)
+    items = response["result"]["items"]
+    assert response["result"]["scope"] == "persistent_local_history"
+    assert response["result"]["retention_limit"] == sidecar.MAX_HISTORY_ITEMS
+    assert len(items) == sidecar.MAX_HISTORY_ITEMS
+    assert items[0]["report"]["index"] == sidecar.MAX_HISTORY_ITEMS + 1
+    assert items[-1]["report"]["index"] == 2
+
+    # A second load reads the same SQLite-backed records, independent of the
+    # in-memory state of the process that recorded them.
+    loaded_again, error = sidecar._load_history()
+    assert error is None
+    assert loaded_again == items
+
+
+def test_scan_cancel_event_is_passed_into_the_shared_scan_service(tmp_path: Path, monkeypatch):
+    import threading
+    from harmelune import sidecar
+
+    cancelled = threading.Event()
+    cancelled.set()
+    observed = {}
+
+    def fake_scan(*args, **kwargs):
+        observed["cancel"] = kwargs["cancel"]
+        assert kwargs["cancel"]() is True
+        return None
+
+    monkeypatch.setattr(sidecar, "scan_libraries", fake_scan)
     try:
-        sidecar._HISTORY.clear()
-        for index in range(sidecar.MAX_HISTORY_ITEMS + 2):
-            sidecar._record_history("safe", {"index": index})
-        response, _ = sidecar._handle(
-            json.loads(request("history-1", "history")), lambda _event: None
+        sidecar._handle(
+            json.loads(request("cancelled-scan", "scan", {
+                "library_a": str(tmp_path / "a"), "library_b": str(tmp_path / "b")
+            })),
+            lambda _event: None,
+            cancelled,
         )
-        items = response["result"]["items"]
-        assert response["result"]["scope"] == "current_sidecar_session"
-        assert len(items) == sidecar.MAX_HISTORY_ITEMS
-        assert items[0]["report"]["index"] == sidecar.MAX_HISTORY_ITEMS + 1
-        assert items[-1]["report"]["index"] == 2
-    finally:
-        sidecar._HISTORY[:] = original
+    except sidecar.ProtocolError as exc:
+        assert exc.code == "SCAN_CANCELLED"
+    else:
+        raise AssertionError("A cancelled scan must not create a plan.")
+    assert observed["cancel"]() is True
+
+
+def test_cancel_scan_command_sets_active_scan_event(monkeypatch):
+    import threading
+    from harmelune import sidecar
+
+    event = threading.Event()
+    monkeypatch.setattr(sidecar, "_ACTIVE_SCAN_EVENT", event)
+    response, _ = sidecar._handle(json.loads(request("cancel", "cancel_scan")), lambda _event: None)
+    assert response["ok"] is True
+    assert response["result"]["accepted"] is True
+    assert event.is_set()
+
+
+def test_sidecar_main_processes_cancel_while_scan_is_running(monkeypatch, tmp_path: Path):
+    import io
+    import json
+    import threading
+    import time
+    from types import SimpleNamespace
+    from harmelune import sidecar
+
+    started = threading.Event()
+
+    def blocking_scan(*args, **kwargs):
+        started.set()
+        cancel = kwargs["cancel"]
+        while not cancel():
+            time.sleep(0.002)
+        return None
+
+    input_lines = [
+        request("scan-live", "scan", {
+            "library_a": str(tmp_path / "a"), "library_b": str(tmp_path / "b")
+        }),
+        request("cancel-live", "cancel_scan"),
+        request("shutdown-live", "shutdown"),
+    ]
+    stdout = io.StringIO()
+    monkeypatch.setattr(sidecar, "scan_libraries", blocking_scan)
+    monkeypatch.setattr(sidecar.sys, "stdin", SimpleNamespace(buffer=io.BytesIO(("\\n".join(input_lines) + "\\n").encode())))
+    monkeypatch.setattr(sidecar.sys, "stdout", stdout)
+    monkeypatch.setattr(sidecar, "_ACTIVE_SCAN_EVENT", None)
+
+    assert sidecar.main() == 0
+    assert started.is_set()
+    messages = [json.loads(line) for line in stdout.getvalue().splitlines()]
+    cancel_response = next(item for item in messages if item.get("id") == "cancel-live")
+    scan_response = next(item for item in messages if item.get("id") == "scan-live")
+    assert cancel_response["result"]["accepted"] is True
+    assert scan_response["error"]["code"] == "SCAN_CANCELLED"
