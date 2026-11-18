@@ -54,3 +54,12 @@ History and Health have dedicated loading, empty, and error states rather than t
 - [ ] Complete `docs/manual-ui-qa.md`; install/smoke-test NSIS on clean Windows with disposable libraries.
 
 Automated CI/source review do not establish clean-machine installer correctness or manual accessibility/usability.
+
+
+## Request lifecycle and operation history
+
+The desktop bridge uses a dedicated stdout reader and request-ID dispatch so progress events and concurrent requests (including scan cancellation) do not block one another. Request/response JSONL lines are bounded, ordinary requests have a 30-second deadline, and scan/execute requests have a 10-minute response deadline. A deadline is not permission to kill the Python process: it may be inside a filesystem transaction. On timeout, the desktop reports that the result is uncertain and leaves the engine running; check durable History before retrying. Application shutdown queues a graceful sidecar shutdown and does not force-kill a possibly mutating process.
+
+The sidecar accepts a concurrent `cancel_scan` command while its scan worker is active. Cancellation is propagated into the existing scanner traversal callback. A cancelled scan does not publish a comparison plan; its partial results are discarded and the UI requires a fresh scan. Cancellation is cooperative at file traversal boundaries and cannot interrupt an individual filesystem/hash operation already in progress.
+
+Completed execution reports are stored in a local SQLite database under Harmelune's application configuration directory, with a 1,000-record retention limit. If persistence fails after a filesystem operation, the operation response still reports the execution result and includes `history_persisted: false`; it is never reported as rolled back merely because history storage failed.

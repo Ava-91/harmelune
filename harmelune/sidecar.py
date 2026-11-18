@@ -692,7 +692,7 @@ def _handle(request: object, emit_progress, cancel_event: threading.Event | None
             "result": {"stopped": True},
         }, True)
 
-    raise ProtocolError("UNKNOWN_COMMAND", "Supported commands are hello, ping, scan, list_tracks, preview_safe, preview_reconcile, execute_safe, execute_reconcile, preview_mirror, execute_mirror, preview_restore, execute_restore, and shutdown.")
+    raise ProtocolError("UNKNOWN_COMMAND", "Supported commands are hello, ping, scan, cancel_scan, list_tracks, preview_safe, preview_reconcile, execute_safe, execute_reconcile, preview_mirror, execute_mirror, preview_restore, execute_restore, and shutdown.")
 
 
 def main() -> int:

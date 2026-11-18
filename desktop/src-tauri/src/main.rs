@@ -173,17 +173,13 @@ fn engine_request(
     match receiver.recv_timeout(request_timeout(&command)) {
         Ok(response) => Ok(response),
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            if let Ok(mut guard) = state.0.lock() {
-                if let Some(mut process) = guard.take() {
-                    fail_pending(&process.pending, "Python engine was stopped after a request timeout.");
-                    let _ = process.child.kill();
-                    let _ = process.child.wait();
-                }
-            }
-            Err(format!("Python engine request '{command}' exceeded its time limit; the sidecar was stopped. Retry after checking the library state."))
+            // Never kill the sidecar on a request deadline: it may be inside a
+            // journaled filesystem transaction. Its eventual response is still
+            // drained by the reader, and durable History records the outcome.
+            Err(format!("Python engine request '{command}' exceeded its response deadline. The sidecar was left running to avoid interrupting a filesystem transaction; check Sync History before retrying."))
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
-            Err("Python engine response channel closed unexpectedly.".to_string())
+            Err("Python engine response channel closed unexpectedly. Check Sync History and restart the desktop engine before retrying any operation.".to_string())
         }
     }
 }
@@ -206,10 +202,10 @@ fn shutdown_engine(state: &EngineState) -> Result<(), String> {
             Ok(Some(_)) => return Ok(()),
             Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
             _ => {
-                let _ = process.child.kill();
-                let _ = process.child.wait();
-                fail_pending(&process.pending, "Python engine was stopped during application shutdown.");
-                return Ok(());
+                // stdin is closed when this handle drops. The queued shutdown
+                // request is processed after any current transaction finishes.
+                // Do not force-kill a possibly mutating engine on application exit.
+                return Err("Python engine is still finishing its current operation. A graceful shutdown was queued; do not restart or retry a destructive operation until its result is checked in History.".to_string());
             }
         }
     }
