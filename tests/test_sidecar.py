@@ -52,7 +52,7 @@ def run_sidecar_and_wait_for_scan(scan_request: str, config_dir: Path) -> subpro
     )
     assert process.stdin is not None and process.stdout is not None
     received = []
-    process.stdin.write(scan_request + "\\n")
+    process.stdin.write(scan_request + "\n")
     process.stdin.flush()
     while True:
         line = process.stdout.readline()
@@ -62,7 +62,7 @@ def run_sidecar_and_wait_for_scan(scan_request: str, config_dir: Path) -> subpro
         message = json.loads(line)
         if message.get("id") == "scan-1" and message.get("type") in {"result", "error"}:
             break
-    process.stdin.write(request("stop-1", "shutdown") + "\\n")
+    process.stdin.write(request("stop-1", "shutdown") + "\n")
     process.stdin.flush()
     process.stdin.close()
     remaining_stdout, stderr = process.communicate(timeout=30)
