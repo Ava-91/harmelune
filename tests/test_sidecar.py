@@ -690,10 +690,17 @@ def test_health_protocol_returns_current_scan_health(tmp_path: Path, monkeypatch
     assert health_response["ok"] is True
     assert health_response["result"]["library_a"]["track_count"] == 1
     assert health_response["result"]["library_b"]["track_count"] == 0
-    missing, _ = sidecar._handle(
-        json.loads(request("health-missing", "health", {"plan_id": "missing"})), lambda _event: None
-    )
-    assert missing["error"]["code"] == "PLAN_NOT_FOUND"
+    from harmelune.sidecar import ProtocolError
+
+    try:
+        sidecar._handle(
+            json.loads(request("health-missing", "health", {"plan_id": "missing"})),
+            lambda _event: None,
+        )
+    except ProtocolError as exc:
+        assert exc.code == "PLAN_NOT_FOUND"
+    else:
+        raise AssertionError("Health must reject an expired scan plan.")
 
 
 def test_history_is_session_scoped_newest_first_and_capped():
