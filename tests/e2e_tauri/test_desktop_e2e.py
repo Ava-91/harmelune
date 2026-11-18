@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import socket
+import shutil
 import subprocess
 import tempfile
 import time
@@ -61,13 +62,21 @@ def test_native_tauri_user_journey(tmp_path: Path):
     screenshots.mkdir(parents=True, exist_ok=True)
     driver_log_path = screenshots / "tauri-driver.log"
     driver_log = driver_log_path.open("w", encoding="utf-8")
+    print(f"tauri-driver executable: {shutil.which('tauri-driver')}")
+    print(f"msedgedriver executable: {shutil.which('msedgedriver')}")
     # Match Tauri's documented Selenium setup: tauri-driver selects its
     # default WebDriver port (4444) without command-line overrides.
+    driver_env = os.environ.copy()
+    # tauri-driver uses tracing; enable it so proxy/native-driver startup and
+    # request routing are visible when the native WebDriver rejects a command.
+    driver_env["RUST_LOG"] = "trace"
+    driver_env["RUST_BACKTRACE"] = "1"
     driver_process = subprocess.Popen(
         ["tauri-driver"],
         stdout=driver_log,
         stderr=subprocess.STDOUT,
         text=True,
+        env=driver_env,
     )
     driver = None
     try:
