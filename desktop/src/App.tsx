@@ -637,14 +637,14 @@ function App() {
               <div className="library-grid">
                 <article className="library-card">
                   <div className="card-topline"><span className="library-letter">A</span><span className="card-state">{libraryA ? "FOLDER SELECTED" : "NOT SELECTED"}</span></div>
-                  <h3>Library A</h3><p className="path-placeholder path-value">{libraryA || "No folder selected"}</p>
-                  <button className="secondary-button" onClick={() => void chooseFolder("a")}>Choose folder…</button>
+                  <h3>Library A</h3><label htmlFor="library-a-path">Folder path</label><input id="library-a-path" aria-label="Library A folder path" value={libraryA} onChange={(event) => setLibraryA(event.target.value)} placeholder="Enter a folder path or choose below…" />
+                  <button className="secondary-button" onClick={() => void chooseFolder("a")}>Browse folders…</button>
                   <div className="card-footer"><span className="folder-mark">▱</span> {summary ? `${summary.tracks_a} audio tracks found` : "Music source or destination"}</div>
                 </article>
                 <article className="library-card">
                   <div className="card-topline"><span className="library-letter second">B</span><span className="card-state">{libraryB ? "FOLDER SELECTED" : "NOT SELECTED"}</span></div>
-                  <h3>Library B</h3><p className="path-placeholder path-value">{libraryB || "No folder selected"}</p>
-                  <button className="secondary-button" onClick={() => void chooseFolder("b")}>Choose folder…</button>
+                  <h3>Library B</h3><label htmlFor="library-b-path">Folder path</label><input id="library-b-path" aria-label="Library B folder path" value={libraryB} onChange={(event) => setLibraryB(event.target.value)} placeholder="Enter a folder path or choose below…" />
+                  <button className="secondary-button" onClick={() => void chooseFolder("b")}>Browse folders…</button>
                   <div className="card-footer"><span className="folder-mark">▱</span> {summary ? `${summary.tracks_b} audio tracks found` : "Music source or destination"}</div>
                 </article>
               </div>
