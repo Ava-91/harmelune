@@ -41,6 +41,36 @@ def parse_output(stdout: str) -> list[dict]:
     return [json.loads(line) for line in stdout.splitlines() if line.strip()]
 
 
+def run_sidecar_and_wait_for_scan(scan_request: str, config_dir: Path) -> subprocess.CompletedProcess[str]:
+    """Send a scan, wait for its correlated response, then shut the sidecar down."""
+    env = os.environ.copy()
+    env["XDG_CONFIG_HOME"] = str(config_dir)
+    process = subprocess.Popen(
+        [sys.executable, "-m", "harmelune.sidecar"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, env=env,
+    )
+    assert process.stdin is not None and process.stdout is not None
+    received = []
+    process.stdin.write(scan_request + "\\n")
+    process.stdin.flush()
+    while True:
+        line = process.stdout.readline()
+        if not line:
+            raise AssertionError("Sidecar closed stdout before returning the scan response.")
+        received.append(line)
+        message = json.loads(line)
+        if message.get("id") == "scan-1" and message.get("type") in {"result", "error"}:
+            break
+    process.stdin.write(request("stop-1", "shutdown") + "\\n")
+    process.stdin.flush()
+    process.stdin.close()
+    remaining_stdout, stderr = process.communicate(timeout=30)
+    return subprocess.CompletedProcess(
+        process.args, process.returncode, "".join(received) + remaining_stdout, stderr
+    )
+
+
 def test_protocol_hello_and_shutdown_are_clean(tmp_path: Path):
     completed = run_sidecar([
         request("hello-1", "hello"),
@@ -77,10 +107,10 @@ def test_scan_progress_and_paged_rows_use_only_temp_synthetic_audio(tmp_path: Pa
     b.mkdir()
     write_wav(a / "Only A.wav", 80)
     write_wav(b / "Only B.wav", 83)
-    completed = run_sidecar([
+    completed = run_sidecar_and_wait_for_scan(
         request("scan-1", "scan", {"library_a": str(a), "library_b": str(b)}),
-        request("stop-1", "shutdown"),
-    ], tmp_path / "config")
+        tmp_path / "config",
+    )
 
     assert completed.returncode == 0
     messages = parse_output(completed.stdout)
