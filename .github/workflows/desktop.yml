@@ -78,7 +78,11 @@ jobs:
             if ($candidate) { $candidate.DirectoryName >> $env:GITHUB_PATH }
             else { throw "Microsoft Edge WebDriver was not installed or added to PATH." }
           }
-          & "$cargoBin\\tauri-driver.exe" --version
+          # tauri-driver does not implement a --version flag; cargo records
+          # the installed crate version in its installation metadata.
+          cargo install --list | Select-String "^tauri-driver "
+          Get-Command tauri-driver | Format-List Source
+          Get-Command msedgedriver | Format-List Source
           msedgedriver --version
           python -c "import selenium; print('Selenium', selenium.__version__)"
 
