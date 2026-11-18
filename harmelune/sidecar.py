@@ -15,8 +15,8 @@ import hmac
 import json
 import sys
 import traceback
-from datetime import datetime, timezone
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -40,7 +40,12 @@ _HISTORY: list[dict[str, object]] = []
 MAX_HISTORY_ITEMS = 100
 
 def _record_history(mode: str, report: dict[str, object]) -> None:
-    _HISTORY.append({"id": uuid4().hex, "timestamp": datetime.now(timezone.utc).isoformat(), "mode": mode, "report": report})
+    _HISTORY.append({
+        "id": uuid4().hex,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "mode": mode,
+        "report": report,
+    })
     del _HISTORY[:-MAX_HISTORY_ITEMS]
 
 
