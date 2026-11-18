@@ -15,6 +15,8 @@ import hmac
 import json
 import sys
 import traceback
+from datetime import datetime, timezone
+from dataclasses import asdict
 from pathlib import Path
 from uuid import uuid4
 
@@ -26,12 +28,20 @@ from .reconcile import ReconcileDecision
 from .services import ScanBundle, execute_workflow, preview_workflow, scan_libraries
 from .path_safety import validate_backup_root
 from .backup import MANIFEST_NAME, BackupVerificationError, restore_verified_backup, verify_backup_contents
+from .health import build_health_report
 
 PROTOCOL_VERSION = 1
 MAX_REQUEST_BYTES = 1_048_576
 PAGE_SIZE = 100
 MAX_PAGE_SIZE = 200
 _PLANS: dict[str, tuple[ScanBundle, list[dict[str, object]]]] = {}
+# Session-scoped only; not a durable audit log.
+_HISTORY: list[dict[str, object]] = []
+MAX_HISTORY_ITEMS = 100
+
+def _record_history(mode: str, report: dict[str, object]) -> None:
+    _HISTORY.append({"id": uuid4().hex, "timestamp": datetime.now(timezone.utc).isoformat(), "mode": mode, "report": report})
+    del _HISTORY[:-MAX_HISTORY_ITEMS]
 
 
 class ProtocolError(ValueError):
@@ -241,7 +251,7 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
         result: dict[str, object] = {
             "engine": "harmelune-python",
             "protocol_version": PROTOCOL_VERSION,
-            "capabilities": ["scan", "list_tracks", "preview_safe", "preview_reconcile", "execute_safe", "execute_reconcile", "preview_mirror", "execute_mirror", "preview_restore", "execute_restore", "shutdown"],
+            "capabilities": ["scan", "list_tracks", "health", "history", "preview_safe", "preview_reconcile", "execute_safe", "execute_reconcile", "preview_mirror", "execute_mirror", "preview_restore", "execute_restore", "shutdown"],
             "read_only": False,
         }
         return ({"version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True, "result": result}, False)
@@ -271,6 +281,19 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
                 "page": _page(rows, {"offset": 0, "limit": PAGE_SIZE}),
             },
         }, False)
+
+    if command == "history":
+        return ({"version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
+                 "result": {"items": list(reversed(_HISTORY)), "scope": "current_sidecar_session"}}, False)
+
+    if command == "health":
+        plan_id = _require_string(params, "plan_id")
+        stored = _PLANS.get(plan_id)
+        if stored is None:
+            raise ProtocolError("PLAN_NOT_FOUND", "This scan is no longer available. Scan both libraries again.")
+        bundle, _rows_for_plan = stored
+        return ({"version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
+                 "result": asdict(build_health_report(bundle.scan_a, bundle.scan_b, bundle.plan))}, False)
 
     if command == "list_tracks":
         plan_id = _require_string(params, "plan_id")
@@ -354,9 +377,11 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
             raise
         except (OSError, ValueError) as exc:
             raise ProtocolError("EXECUTION_BLOCKED", str(exc)) from exc
+        report_data = report.to_dict()
+        _record_history("safe", report_data)
         return ({
             "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
-            "result": {"execution": report.to_dict(), "mutations_enabled": True},
+            "result": {"execution": report_data, "mutations_enabled": True},
         }, False)
 
     if command == "preview_reconcile":
@@ -438,9 +463,11 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
             raise
         except (OSError, ValueError) as exc:
             raise ProtocolError("EXECUTION_BLOCKED", str(exc)) from exc
+        report_data = report.to_dict()
+        _record_history("reconcile", report_data)
         return ({
             "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
-            "result": {"execution": report.to_dict(), "mutations_enabled": True},
+            "result": {"execution": report_data, "mutations_enabled": True},
         }, False)
 
     if command == "preview_mirror":
@@ -510,9 +537,11 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
             raise
         except (OSError, ValueError, RuntimeError) as exc:
             raise ProtocolError("EXECUTION_BLOCKED", str(exc)) from exc
+        report_data = report.to_dict()
+        _record_history("mirror", report_data)
         return ({
             "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
-            "result": {"execution": report.to_dict(), "mutations_enabled": True},
+            "result": {"execution": report_data, "mutations_enabled": True},
         }, False)
 
     if command == "preview_restore":
@@ -597,14 +626,12 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
             raise
         except (OSError, ValueError, RuntimeError, BackupVerificationError) as exc:
             raise ProtocolError("RESTORE_FAILED", str(exc)) from exc
-        return ({
-            "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
-            "result": {
-                "mode": "restore", "restored": result.restored, "recovered": result.recovered,
-                "safety_backup": str(result.safety_backup) if result.safety_backup else None,
-                "error": result.error, "mutations_enabled": True,
-            },
-        }, False)
+        restore_report = {"mode": "restore", "restored": result.restored, "recovered": result.recovered,
+                          "safety_backup": str(result.safety_backup) if result.safety_backup else None,
+                          "error": result.error, "mutations_enabled": True}
+        _record_history("restore", restore_report)
+        return ({"version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
+                 "result": restore_report}, False)
 
     if command == "shutdown":
         return ({

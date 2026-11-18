@@ -94,6 +94,10 @@ function App() {
   const [scanning, setScanning] = useState(false);
   const [progress, setProgress] = useState("");
   const [error, setError] = useState("");
+  const [historyItems, setHistoryItems] = useState<Record<string, any>[]>([]);
+  const [historyScope, setHistoryScope] = useState("current_sidecar_session");
+  const [healthReport, setHealthReport] = useState<Record<string, any> | null>(null);
+  const [sectionLoading, setSectionLoading] = useState(false);
 
   useEffect(() => {
     if (!isTauri()) {
@@ -157,6 +161,31 @@ function App() {
       });
     return () => { cancelled = true; };
   }, [active, planId, reviewPage]);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    if (active === "history") {
+      setSectionLoading(true);
+      void engineRequest("history").then((response) => {
+        if (cancelled) return;
+        if (!response.ok) throw new Error(response.error?.message ?? "Could not load sync history.");
+        setHistoryItems((response.result?.items ?? []) as Record<string, any>[]);
+        setHistoryScope(String(response.result?.scope ?? "current_sidecar_session"));
+      }).catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); })
+        .finally(() => { if (!cancelled) setSectionLoading(false); });
+    } else if (active === "health") {
+      if (!planId) { setHealthReport(null); return () => { cancelled = true; }; }
+      setSectionLoading(true);
+      void engineRequest("health", { plan_id: planId }).then((response) => {
+        if (cancelled) return;
+        if (!response.ok) throw new Error(response.error?.message ?? "Could not load library health.");
+        setHealthReport(response.result ?? null);
+      }).catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); })
+        .finally(() => { if (!cancelled) setSectionLoading(false); });
+    }
+    return () => { cancelled = true; };
+  }, [active, planId]);
 
   const chooseFolder = async (which: "a" | "b") => {
     setError("");
@@ -574,7 +603,7 @@ function App() {
 
           <div className="notice" role="status">
             <div className="notice-icon" aria-hidden="true">i</div>
-            <div><strong>Safe and Reconcile execution require explicit approval</strong><p>Both workflows require a fresh preview, exact typed confirmation, and verified backups outside both libraries. Reconcile applies only the saved explicit decisions. Mirror and Restore remain locked.</p></div>
+            <div><strong>Safe and Reconcile execution require explicit approval</strong><p>Safe, Reconcile, Mirror, and Restore require a fresh preview, exact typed confirmation, and verified backups. Reconcile applies only saved explicit decisions; Mirror and Restore have their own final safety gates.</p></div>
           </div>
 
           {active === "library" && (
@@ -940,9 +969,37 @@ function App() {
             </>
           )}
 
-          {active !== "library" && active !== "compare" && active !== "review" && active !== "mirror" && active !== "backups" && (
-            <div className="empty-section"><div className="empty-icon" aria-hidden="true">{section.mark}</div><h2>{section.label} is waiting for its safety workflow</h2><p>{section.hint}. This section remains unavailable until review, freshness validation, verified backups, and recovery behavior are connected to the Python engine.</p><button className="secondary-button" onClick={() => setActive("library")}>Back to library workspace</button></div>
-          )}
+          {active === "history" && <>
+            <div className="section-title-row"><div><h2>Sync history</h2><p>Completed operation reports from this local sidecar session.</p></div><span className="subtle-label">SESSION ONLY</span></div>
+            <div className="notice"><div className="notice-icon">i</div><div><strong>Not a permanent audit log</strong><p>History resets when the Python sidecar exits. Persistent exportable history remains future work.</p></div></div>
+            {sectionLoading && <div className="table-empty">Loading history…</div>}
+            {!sectionLoading && historyItems.length === 0 && <div className="table-empty">No completed operations in this session yet.</div>}
+            <div className="review-items">{historyItems.map((item) => { const report = item.report ?? {}; return <article className="review-item" key={String(item.id)}>
+              <div className="review-item-main"><span className="category-pill">{String(item.mode).toUpperCase()}</span><strong>{String(report.final_status ?? (report.restored ? "RESTORED" : report.error ? "ATTENTION" : "COMPLETED"))}</strong>
+                <span className="review-artist">{new Date(String(item.timestamp)).toLocaleString()}</span><span className="review-reason">{Number(report.succeeded ?? (report.restored ? 1 : 0))} succeeded · {Number(report.failed ?? (report.error ? 1 : 0))} failed · {Number(report.skipped ?? 0)} skipped</span></div>
+              <details><summary>Full report</summary><pre>{JSON.stringify(report, null, 2)}</pre></details></article>; })}</div>
+            <p className="review-reason">Scope: {historyScope.replaceAll("_", " ")} · newest first · up to 100 entries.</p>
+            {error && <div className="error-notice" role="alert">{error}</div>}
+          </>}
+
+          {active === "health" && <>
+            <div className="section-title-row"><div><h2>Library health</h2><p>Read-only metrics from the latest scan.</p></div><span className="subtle-label">{hasScan ? "CURRENT SCAN" : "SCAN REQUIRED"}</span></div>
+            {!hasScan && <div className="table-empty">Scan both libraries to calculate metadata, artwork, duplicate, and review health.</div>}
+            {sectionLoading && <div className="table-empty">Calculating library health…</div>}
+            {hasScan && !sectionLoading && !healthReport && <div className="table-empty">Health data unavailable. Rescan and try again.</div>}
+            {healthReport && (["library_a", "library_b"] as const).map((key) => { const item = healthReport[key] ?? {}; return <section className="preview-result" key={key}>
+              <h3>{key === "library_a" ? "Library A" : "Library B"}</h3><div className="metrics-grid">
+                <div className="metric-card"><span>Audio tracks</span><strong>{Number(item.track_count ?? 0)}</strong></div>
+                <div className="metric-card"><span>Metadata completeness</span><strong>{Number(item.metadata_completeness_pct ?? 0).toFixed(1)}%</strong><small>{Number(item.incomplete_metadata_tracks ?? 0)} incomplete</small></div>
+                <div className="metric-card"><span>Artwork coverage</span><strong>{Number(item.artwork_coverage_pct ?? 0).toFixed(1)}%</strong><small>{Number(item.missing_artwork_tracks ?? 0)} missing</small></div>
+                <div className="metric-card"><span>Duplicate tracks</span><strong>{Number(item.duplicate_tracks ?? 0)}</strong><small>{(item.duplicate_groups ?? []).length} groups</small></div></div>
+              <div className={item.health_check_complete ? "health-card healthy" : "health-card warning"}><strong>{item.health_check_complete ? "Health check complete" : "Health check incomplete"}</strong><small>{Number(item.unreadable_files ?? 0)} scan error(s) · {Number(item.unsupported_audio_files ?? 0)} unsupported audio-like file(s)</small></div>
+              {(item.health_check_errors ?? []).length > 0 && <div className="error-notice"><ul>{item.health_check_errors.map((message: string, index: number) => <li key={index}>{message}</li>)}</ul></div>}
+              {(item.duplicate_groups ?? []).length > 0 && <details><summary>Duplicate groups</summary><ul>{item.duplicate_groups.map((group: string[], index: number) => <li key={index}>{group.join(" · ")}</li>)}</ul></details>}
+            </section>; })}
+            {healthReport?.plan && <div className="metrics-grid"><div className="metric-card"><span>Unresolved conflicts</span><strong>{Number(healthReport.plan.unresolved_conflicts ?? 0)}</strong></div><div className="metric-card"><span>Unresolved fuzzy matches</span><strong>{Number(healthReport.plan.unresolved_fuzzy_matches ?? 0)}</strong></div></div>}
+            {error && <div className="error-notice" role="alert">{error}</div>}
+          </>}
 
           {error && active === "library" && <div className="error-notice" role="alert">{error}</div>}
           <footer className="page-footer"><span><span className="status-dot" /> {scanning ? progress : executionReport ? `Last Safe execution: ${String(executionReport.final_status)}` : "Scan is read-only · no library files changed"}</span><span>Python stays the sync engine · Tauri stays the desktop shell</span></footer>
