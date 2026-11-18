@@ -3,7 +3,7 @@ use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Read, Write},
     path::PathBuf,
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    process::{Child, ChildStdin, Command, Stdio},
     sync::{mpsc, Arc, Mutex},
     thread,
     time::{Duration, Instant},
@@ -221,7 +221,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(EngineState::default())
         .invoke_handler(tauri::generate_handler![engine_request, engine_stop])
-        .build()
+        .build(tauri::generate_context!())
         .expect("error while building Harmelune desktop");
 
     app.run(|app_handle, event| {
