@@ -50,6 +50,7 @@ def test_native_tauri_user_journey(tmp_path: Path):
     app_path = Path(os.environ["HARMELUNE_TAURI_APP"]).resolve()
     assert app_path.is_file(), f"Built Tauri application not found: {app_path}"
 
+    os.environ["APPDATA"] = str(tmp_path / "isolated-app-data")
     library_a = tmp_path / "Library A Ω"
     library_b = tmp_path / "Library B"
     source_track = library_a / "Album" / "Synthetic track.wav"
@@ -104,9 +105,6 @@ def test_native_tauri_user_journey(tmp_path: Path):
         wait.until(conditions.visibility_of_element_located(
             (By.XPATH, "//h2[normalize-space()='Library health']")
         ))
-        wait.until(conditions.text_to_be_present_in_element(
-            (By.CSS_SELECTOR, ".preview-result"), "Synthetic track"
-        )) if False else None
         health_values = [item.text for item in driver.find_elements(By.CSS_SELECTOR, ".metric-card strong")]
         assert "1" in health_values, f"Expected one scanned track in health metrics: {health_values}"
 
@@ -117,7 +115,7 @@ def test_native_tauri_user_journey(tmp_path: Path):
         ))
         driver.find_element(By.XPATH, "//nav//button[.//span[normalize-space()='Backups & recovery']]").click()
         wait.until(conditions.visibility_of_element_located((By.ID, "restore-backup-path")))
-        assert "RESTORE" in driver.find_element(By.CSS_SELECTOR, ".page-content").text
+        assert "Restore" in driver.find_element(By.CSS_SELECTOR, ".page-content").text
 
         # Resize the real desktop window and verify that the primary workspace
         # remains reachable without a document-level horizontal overflow.

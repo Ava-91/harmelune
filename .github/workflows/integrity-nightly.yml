@@ -1,6 +1,12 @@
 name: Nightly library integrity
 
 on:
+  pull_request:
+    paths:
+      - "harmelune/**"
+      - "tests/**"
+      - "requirements*.txt"
+      - ".github/workflows/integrity-nightly.yml"
   schedule:
     - cron: "41 3 * * *"
   workflow_dispatch:

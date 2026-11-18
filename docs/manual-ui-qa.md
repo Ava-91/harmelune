@@ -11,3 +11,12 @@ Automated tests cover core logic and selected keyboard behavior, but they cannot
 - [ ] Failure recovery: use disposable test libraries and simulated I/O failures; confirm rollback failure clearly shows the backup path and manual recovery warning.
 - [ ] Backup messaging: confirm the UI says the manifest check verifies integrity against a stored manifest, not authenticity of who created it.
 - [ ] Never use a real music library for destructive failure-injection tests.
+
+
+## Automated native desktop QA
+
+The Windows Desktop shell workflow now builds the actual Tauri executable and drives it with WebDriver through the native WebView. The automated journey creates disposable synthetic WAV libraries, enters their paths in the real UI, scans through the packaged Python-sidecar entry point, checks the comparison and Library Health screens, opens persistent History and Backups & recovery, resizes the window, and verifies that the source bytes and destination contents remain unchanged. Screenshots and a JUnit report are uploaded as workflow artifacts.
+
+Protocol-level tests separately exercise live scan cancellation while the sidecar is processing another request, cancellation state propagation into the shared scanner, SQLite history persistence/retention, stale-plan rejection, and existing transaction recovery tests. No test uses the user's actual music folders.
+
+Automated WebDriver coverage does not establish Narrator/screen-reader compatibility or subjective usability across every physical display and scaling configuration; those remain explicitly manual compatibility checks.

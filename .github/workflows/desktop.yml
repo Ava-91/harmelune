@@ -49,7 +49,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: desktop
-        run: npm install
+        run: npm ci
 
       - name: Type-check and build frontend
         working-directory: desktop
@@ -60,3 +60,42 @@ jobs:
 
       - name: Check Tauri shell
         run: cargo check --manifest-path desktop/src-tauri/Cargo.toml
+
+      - name: Build the actual desktop executable for WebDriver tests
+        working-directory: desktop
+        run: npm run tauri -- build --debug --no-bundle
+
+      - name: Install native Tauri WebDriver
+        shell: pwsh
+        run: |
+          cargo install tauri-driver --locked
+          cargo install --git https://github.com/chippers/msedgedriver-tool
+          & "$env:USERPROFILE\\.cargo\\bin\\msedgedriver-tool.exe"
+          $cargoBin = Join-Path $env:USERPROFILE ".cargo\\bin"
+          "$cargoBin" >> $env:GITHUB_PATH
+          if (-not (Get-Command msedgedriver -ErrorAction SilentlyContinue)) {
+            $candidate = Get-ChildItem -Path $PWD,$cargoBin -Filter msedgedriver.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($candidate) { $candidate.DirectoryName >> $env:GITHUB_PATH }
+            else { throw "Microsoft Edge WebDriver was not installed or added to PATH." }
+          }
+          & "$cargoBin\\tauri-driver.exe" --version
+          msedgedriver --version
+
+      - name: Exercise the real Tauri desktop user journey
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts\\tauri-e2e | Out-Null
+          python -m pytest -vv tests/e2e_tauri/test_desktop_e2e.py --junitxml=artifacts\\tauri-e2e\\results.xml
+        env:
+          HARMELUNE_TAURI_E2E: "1"
+          HARMELUNE_TAURI_APP: desktop\\src-tauri\\target\\debug\\harmelune-desktop.exe
+          HARMELUNE_E2E_ARTIFACTS: artifacts\\tauri-e2e
+          PYTHONFAULTHANDLER: "1"
+
+      - name: Upload native desktop test evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tauri-native-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/tauri-e2e
+          if-no-files-found: warn
