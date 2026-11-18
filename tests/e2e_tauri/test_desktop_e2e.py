@@ -108,26 +108,66 @@ def test_native_tauri_user_journey(tmp_path: Path):
         health_values = [item.text for item in driver.find_elements(By.CSS_SELECTOR, ".metric-card strong")]
         assert "1" in health_values, f"Expected one scanned track in health metrics: {health_values}"
 
-        # Persistent History and Recovery empty states are reachable and readable.
+        # Resize the real desktop window at several viewport widths and
+        # check the document never develops horizontal overflow.
+        for width, height in ((900, 700), (1024, 768), (1440, 900)):
+            driver.set_window_size(width, height)
+            overflow = driver.execute_script(
+                "return document.documentElement.scrollWidth > window.innerWidth + 2"
+            )
+            assert overflow is False, f"Desktop workspace overflowed at {width}x{height}."
+
+        # Complete a real Safe-mode workflow against disposable fixtures.
+        driver.find_element(By.XPATH, "//nav//button[.//span[normalize-space()='Review & preview']]").click()
+        driver.find_element(By.XPATH, "//button[normalize-space()='Build safe-mode preview']").click()
+        wait.until(conditions.text_to_be_present_in_element(
+            (By.CSS_SELECTOR, ".preview-result"), "Preview only"
+        ))
+        backup_root = tmp_path / "verified-backups"
+        driver.find_element(By.ID, "safe-backup-root").send_keys(str(backup_root))
+        driver.find_element(By.ID, "safe-confirmation").send_keys("APPLY SAFE")
+        driver.find_element(
+            By.XPATH, "//button[normalize-space()='Create verified backup & apply Safe copies']"
+        ).click()
+        wait.until(conditions.visibility_of_element_located(
+            (By.XPATH, "//h3[normalize-space()='Safe execution report']")
+        ))
+        destination_track = library_b / "Album" / "Synthetic track.wav"
+        wait.until(lambda _driver: destination_track.is_file())
+        assert destination_track.read_bytes() == original_bytes
+        assert source_track.read_bytes() == original_bytes
+
+        # The report must be written to local SQLite history.
         driver.find_element(By.XPATH, "//nav//button[.//span[normalize-space()='Sync history']]").click()
         wait.until(conditions.text_to_be_present_in_element(
             (By.CSS_SELECTOR, ".page-content"), "Persistent local history"
         ))
+        wait.until(conditions.text_to_be_present_in_element(
+            (By.CSS_SELECTOR, ".page-content"), "SAFE"
+        ))
+        driver.save_screenshot(str(screenshots / "tauri-user-journey.png"))
+
+        # Restart the actual Tauri process and prove the record survived.
+        driver.quit()
+        driver = webdriver.Remote(
+            command_executor="http://127.0.0.1:4444/",
+            options=options,
+        )
+        wait = WebDriverWait(driver, 30)
+        driver.find_element(By.XPATH, "//nav//button[.//span[normalize-space()='Sync history']]").click()
+        wait.until(conditions.text_to_be_present_in_element(
+            (By.CSS_SELECTOR, ".page-content"), "Persistent local history"
+        ))
+        wait.until(conditions.text_to_be_present_in_element(
+            (By.CSS_SELECTOR, ".page-content"), "SAFE"
+        ))
+
+        # Recovery controls remain reachable after restart.
         driver.find_element(By.XPATH, "//nav//button[.//span[normalize-space()='Backups & recovery']]").click()
         wait.until(conditions.visibility_of_element_located((By.ID, "restore-backup-path")))
         assert "Restore" in driver.find_element(By.CSS_SELECTOR, ".page-content").text
-
-        # Resize the real desktop window and verify that the primary workspace
-        # remains reachable without a document-level horizontal overflow.
-        driver.set_window_size(1000, 760)
-        overflow = driver.execute_script(
-            "return document.documentElement.scrollWidth > window.innerWidth + 2"
-        )
-        assert overflow is False, "Desktop workspace overflowed horizontally at 1000x760."
-
-        driver.save_screenshot(str(screenshots / "tauri-user-journey.png"))
         assert source_track.read_bytes() == original_bytes
-        assert list(library_b.rglob("*")) == []
+        assert destination_track.read_bytes() == original_bytes
     except Exception:
         if driver is not None:
             driver.save_screenshot(str(screenshots / "tauri-user-journey-failure.png"))
