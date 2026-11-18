@@ -670,3 +670,47 @@ def test_reconcile_execution_rejects_changed_decisions_backup_path_and_stale_pla
         raise AssertionError("Stale Reconcile plans must not execute.")
     assert not backup_root.exists()
     assert not (b / "Only A.wav").exists()
+
+def test_health_protocol_returns_current_scan_health(tmp_path: Path, monkeypatch):
+    from harmelune import sidecar
+
+    a, b = tmp_path / "Health A", tmp_path / "Health B"
+    a.mkdir()
+    b.mkdir()
+    write_wav(a / "One.wav", 64)
+    monkeypatch.setattr(sidecar, "_PLANS", {})
+    scan_response, _ = sidecar._handle(
+        json.loads(request("scan-health", "scan", {"library_a": str(a), "library_b": str(b)})),
+        lambda _event: None,
+    )
+    plan_id = scan_response["result"]["plan_id"]
+    health_response, _ = sidecar._handle(
+        json.loads(request("health-1", "health", {"plan_id": plan_id})), lambda _event: None
+    )
+    assert health_response["ok"] is True
+    assert health_response["result"]["library_a"]["track_count"] == 1
+    assert health_response["result"]["library_b"]["track_count"] == 0
+    missing, _ = sidecar._handle(
+        json.loads(request("health-missing", "health", {"plan_id": "missing"})), lambda _event: None
+    )
+    assert missing["error"]["code"] == "PLAN_NOT_FOUND"
+
+
+def test_history_is_session_scoped_newest_first_and_capped():
+    from harmelune import sidecar
+
+    original = sidecar._HISTORY[:]
+    try:
+        sidecar._HISTORY.clear()
+        for index in range(sidecar.MAX_HISTORY_ITEMS + 2):
+            sidecar._record_history("safe", {"index": index})
+        response, _ = sidecar._handle(
+            json.loads(request("history-1", "history")), lambda _event: None
+        )
+        items = response["result"]["items"]
+        assert response["result"]["scope"] == "current_sidecar_session"
+        assert len(items) == sidecar.MAX_HISTORY_ITEMS
+        assert items[0]["report"]["index"] == sidecar.MAX_HISTORY_ITEMS + 1
+        assert items[-1]["report"]["index"] == 2
+    finally:
+        sidecar._HISTORY[:] = original
