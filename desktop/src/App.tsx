@@ -92,6 +92,7 @@ function App() {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("all");
   const [scanning, setScanning] = useState(false);
+  const [scanCancelRequested, setScanCancelRequested] = useState(false);
   const [progress, setProgress] = useState("");
   const [error, setError] = useState("");
   const [historyItems, setHistoryItems] = useState<Record<string, any>[]>([]);
@@ -227,6 +228,7 @@ function App() {
     }
     setError("");
     setScanning(true);
+    setScanCancelRequested(false);
     setProgress("Starting read-only scan…");
     setActive("library");
     try {
@@ -258,10 +260,31 @@ function App() {
       setActive("compare");
       setProgress(result.summary.safe_to_preview ? "Scan complete · no files changed" : "Scan has issues · review errors before proceeding");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-      setProgress("");
+      const message = reason instanceof Error ? reason.message : String(reason);
+      if (message.toLocaleLowerCase().includes("cancel")) {
+        setError("Scan cancelled. Partial results were discarded; run a fresh scan before previewing or applying changes.");
+        setProgress("Scan cancelled · no files changed");
+      } else {
+        setError(message);
+        setProgress("");
+      }
     } finally {
       setScanning(false);
+      setScanCancelRequested(false);
+    }
+  };
+
+  const cancelScan = async () => {
+    if (!scanning || scanCancelRequested) return;
+    setScanCancelRequested(true);
+    setProgress("Requesting scan cancellation…");
+    try {
+      const response = await engineRequest("cancel_scan");
+      if (!response.ok) throw new Error(response.error?.message ?? "Could not request scan cancellation.");
+      if (!response.result?.accepted) setProgress("No active scan was found.");
+    } catch (reason) {
+      setScanCancelRequested(false);
+      setError(reason instanceof Error ? reason.message : String(reason));
     }
   };
 
@@ -623,7 +646,7 @@ function App() {
                   <div className="card-footer"><span className="folder-mark">▱</span> {summary ? `${summary.tracks_b} audio tracks found` : "Music source or destination"}</div>
                 </article>
               </div>
-              <div className="scan-actions"><button className="primary-button" disabled={scanning || !isTauri()} onClick={() => void scan()}>{scanning ? "Scanning…" : "Scan & compare libraries"}</button><span>{progress || "Read-only scan · no backups or changes"}</span></div>
+              <div className="scan-actions"><button className="primary-button" disabled={scanning || !isTauri()} onClick={() => void scan()}>{scanning ? "Scanning…" : "Scan & compare libraries"}</button>{scanning && <button className="secondary-button" disabled={scanCancelRequested} onClick={() => void cancelScan()}>{scanCancelRequested ? "Cancelling…" : "Cancel scan"}</button>}<span role="status" aria-live="polite">{progress || "Read-only scan · no backups or changes"}</span></div>
             </>
           )}
 
@@ -970,15 +993,19 @@ function App() {
           )}
 
           {active === "history" && <>
-            <div className="section-title-row"><div><h2>Sync history</h2><p>Completed operation reports from this local sidecar session.</p></div><span className="subtle-label">SESSION ONLY</span></div>
-            <div className="notice"><div className="notice-icon">i</div><div><strong>Not a permanent audit log</strong><p>History resets when the Python sidecar exits. Persistent exportable history remains future work.</p></div></div>
+            <div className="section-title-row"><div><h2>Sync history</h2><p>Completed operation reports stored locally on this device.</p></div><span className="subtle-label">LOCAL HISTORY</span></div>
+            <div className="notice"><div className="notice-icon">i</div><div><strong>Persistent local history</strong><p>Reports survive application restarts. The database is stored in Harmelune's local application-data folder; up to 1,000 recent operations are retained.</p></div></div>
+            {historyItems.some((item) => item.report?.final_status === "FAILED" || item.report?.error) && <div className="error-notice"><strong>Some recent operations need attention.</strong><p>Open each full report, preserve its verified backup path, and use Backups & recovery to verify a backup before restoring. Do not retry a failed destructive operation automatically.</p></div>}
+            {historyItems.length === 0 && !sectionLoading && <p className="review-reason">No completed operations have been recorded yet.</p>}
+            
             {sectionLoading && <div className="table-empty">Loading history…</div>}
             {!sectionLoading && historyItems.length === 0 && <div className="table-empty">No completed operations in this session yet.</div>}
             <div className="review-items">{historyItems.map((item) => { const report = item.report ?? {}; return <article className="review-item" key={String(item.id)}>
               <div className="review-item-main"><span className="category-pill">{String(item.mode).toUpperCase()}</span><strong>{String(report.final_status ?? (report.restored ? "RESTORED" : report.error ? "ATTENTION" : "COMPLETED"))}</strong>
                 <span className="review-artist">{new Date(String(item.timestamp)).toLocaleString()}</span><span className="review-reason">{Number(report.succeeded ?? (report.restored ? 1 : 0))} succeeded · {Number(report.failed ?? (report.error ? 1 : 0))} failed · {Number(report.skipped ?? 0)} skipped</span></div>
               <details><summary>Full report</summary><pre>{JSON.stringify(report, null, 2)}</pre></details></article>; })}</div>
-            <p className="review-reason">Scope: {historyScope.replaceAll("_", " ")} · newest first · up to 100 entries.</p>
+            <p className="review-reason">Storage: {historyScope.replaceAll("_", " ")} · newest first · {Number(historyItems.length)} record(s).</p>
+            {historyItems[0] && <p className="review-reason">Most recent operation: {new Date(String(historyItems[0].timestamp)).toLocaleString()}.</p>}
             {error && <div className="error-notice" role="alert">{error}</div>}
           </>}
 
