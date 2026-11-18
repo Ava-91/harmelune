@@ -792,7 +792,7 @@ def test_sidecar_main_processes_cancel_while_scan_is_running(monkeypatch, tmp_pa
     ]
     stdout = io.StringIO()
     monkeypatch.setattr(sidecar, "scan_libraries", blocking_scan)
-    monkeypatch.setattr(sidecar.sys, "stdin", SimpleNamespace(buffer=io.BytesIO(("\\n".join(input_lines) + "\\n").encode())))
+    monkeypatch.setattr(sidecar.sys, "stdin", SimpleNamespace(buffer=io.BytesIO(("\n".join(input_lines) + "\n").encode())))
     monkeypatch.setattr(sidecar.sys, "stdout", stdout)
     monkeypatch.setattr(sidecar, "_ACTIVE_SCAN_EVENT", None)
 

@@ -96,7 +96,8 @@ function App() {
   const [progress, setProgress] = useState("");
   const [error, setError] = useState("");
   const [historyItems, setHistoryItems] = useState<Record<string, any>[]>([]);
-  const [historyScope, setHistoryScope] = useState("current_sidecar_session");
+  const [historyScope, setHistoryScope] = useState("persistent_local_history");
+  const [historyStorageError, setHistoryStorageError] = useState("");
   const [healthReport, setHealthReport] = useState<Record<string, any> | null>(null);
   const [sectionLoading, setSectionLoading] = useState(false);
 
@@ -172,7 +173,8 @@ function App() {
         if (cancelled) return;
         if (!response.ok) throw new Error(response.error?.message ?? "Could not load sync history.");
         setHistoryItems((response.result?.items ?? []) as Record<string, any>[]);
-        setHistoryScope(String(response.result?.scope ?? "current_sidecar_session"));
+        setHistoryScope(String(response.result?.scope ?? "persistent_local_history"));
+        setHistoryStorageError(String(response.result?.storage_error ?? ""));
       }).catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); })
         .finally(() => { if (!cancelled) setSectionLoading(false); });
     } else if (active === "health") {
@@ -999,7 +1001,8 @@ function App() {
             {historyItems.length === 0 && !sectionLoading && <p className="review-reason">No completed operations have been recorded yet.</p>}
             
             {sectionLoading && <div className="table-empty">Loading history…</div>}
-            {!sectionLoading && historyItems.length === 0 && <div className="table-empty">No completed operations in this session yet.</div>}
+            {!sectionLoading && historyItems.length === 0 && <div className="table-empty">No completed operations have been saved yet.</div>}
+            {historyStorageError && <div className="error-notice" role="alert"><strong>Local history could not be read.</strong><p>{historyStorageError}</p><small>Completed operations may still have run; check the verified backup location and application-data folder.</small></div>}
             <div className="review-items">{historyItems.map((item) => { const report = item.report ?? {}; return <article className="review-item" key={String(item.id)}>
               <div className="review-item-main"><span className="category-pill">{String(item.mode).toUpperCase()}</span><strong>{String(report.final_status ?? (report.restored ? "RESTORED" : report.error ? "ATTENTION" : "COMPLETED"))}</strong>
                 <span className="review-artist">{new Date(String(item.timestamp)).toLocaleString()}</span><span className="review-reason">{Number(report.succeeded ?? (report.restored ? 1 : 0))} succeeded · {Number(report.failed ?? (report.error ? 1 : 0))} failed · {Number(report.skipped ?? 0)} skipped</span></div>
