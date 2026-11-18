@@ -13,7 +13,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import sqlite3
 import sys
+import threading
 import traceback
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -29,24 +31,58 @@ from .services import ScanBundle, execute_workflow, preview_workflow, scan_libra
 from .path_safety import validate_backup_root
 from .backup import MANIFEST_NAME, BackupVerificationError, restore_verified_backup, verify_backup_contents
 from .health import build_health_report
+from .settings import default_config_dir
 
 PROTOCOL_VERSION = 1
 MAX_REQUEST_BYTES = 1_048_576
 PAGE_SIZE = 100
 MAX_PAGE_SIZE = 200
 _PLANS: dict[str, tuple[ScanBundle, list[dict[str, object]]]] = {}
-# Session-scoped only; not a durable audit log.
-_HISTORY: list[dict[str, object]] = []
-MAX_HISTORY_ITEMS = 100
+MAX_HISTORY_ITEMS = 1000
+_ACTIVE_SCAN_EVENT: threading.Event | None = None
+_SCAN_LOCK = threading.Lock()
+_OUTPUT_LOCK = threading.Lock()
 
-def _record_history(mode: str, report: dict[str, object]) -> None:
-    _HISTORY.append({
-        "id": uuid4().hex,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "mode": mode,
-        "report": report,
-    })
-    del _HISTORY[:-MAX_HISTORY_ITEMS]
+
+def _history_path() -> Path:
+    return default_config_dir() / "operation-history.sqlite3"
+
+
+def _record_history(mode: str, report: dict[str, object]) -> bool:
+    """Persist an operation without hiding its result if history storage fails."""
+    try:
+        path = _history_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(path, timeout=3) as connection:
+            connection.execute("CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, mode TEXT NOT NULL, report_json TEXT NOT NULL)")
+            connection.execute("INSERT INTO operations (id, timestamp, mode, report_json) VALUES (?, ?, ?, ?)",
+                (uuid4().hex, datetime.now(timezone.utc).isoformat(), mode,
+                 json.dumps(report, ensure_ascii=False, separators=(",", ":"))))
+            connection.execute("DELETE FROM operations WHERE id NOT IN (SELECT id FROM operations ORDER BY timestamp DESC, rowid DESC LIMIT ?)", (MAX_HISTORY_ITEMS,))
+        return True
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        traceback.print_exc(file=sys.stderr)
+        return False
+
+
+def _load_history() -> tuple[list[dict[str, object]], str | None]:
+    path = _history_path()
+    if not path.exists():
+        return [], None
+    try:
+        with sqlite3.connect(path, timeout=3) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute("SELECT id, timestamp, mode, report_json FROM operations ORDER BY timestamp DESC, rowid DESC LIMIT ?", (MAX_HISTORY_ITEMS,)).fetchall()
+        items = []
+        for row in rows:
+            try:
+                report = json.loads(row["report_json"])
+            except json.JSONDecodeError:
+                report = {"history_error": "Stored report could not be decoded."}
+            items.append({"id": row["id"], "timestamp": row["timestamp"], "mode": row["mode"], "report": report})
+        return items, None
+    except (OSError, sqlite3.Error) as exc:
+        return [], str(exc)
 
 
 class ProtocolError(ValueError):
@@ -56,8 +92,10 @@ class ProtocolError(ValueError):
 
 
 def _write(payload: dict[str, object]) -> None:
-    sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
-    sys.stdout.flush()
+    line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+    with _OUTPUT_LOCK:
+        sys.stdout.write(line)
+        sys.stdout.flush()
 
 
 def _error(request_id: object, code: str, message: str) -> None:
@@ -238,7 +276,7 @@ def _page(rows: list[dict[str, object]], params: dict[str, object]) -> dict[str,
     }
 
 
-def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
+def _handle(request: object, emit_progress, cancel_event: threading.Event | None = None) -> tuple[dict[str, object], bool]:
     if not isinstance(request, dict):
         raise ProtocolError("INVALID_REQUEST", "Each JSONL request must be an object.")
     request_id = request.get("id")
@@ -256,7 +294,7 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
         result: dict[str, object] = {
             "engine": "harmelune-python",
             "protocol_version": PROTOCOL_VERSION,
-            "capabilities": ["scan", "list_tracks", "health", "history", "preview_safe", "preview_reconcile", "execute_safe", "execute_reconcile", "preview_mirror", "execute_mirror", "preview_restore", "execute_restore", "shutdown"],
+            "capabilities": ["scan", "cancel_scan", "list_tracks", "health", "history", "preview_safe", "preview_reconcile", "execute_safe", "execute_reconcile", "preview_mirror", "execute_mirror", "preview_restore", "execute_restore", "shutdown"],
             "read_only": False,
         }
         return ({"version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True, "result": result}, False)
@@ -272,7 +310,7 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
                 "version": PROTOCOL_VERSION, "id": request_id, "type": "progress",
                 "event": "scan_progress", "side": side, "visited": visited,
             })
-        bundle = scan_libraries(library_a, library_b, fuzzy_threshold=float(threshold), progress=progress)
+        bundle = scan_libraries(library_a, library_b, fuzzy_threshold=float(threshold), progress=progress, cancel=cancel_event.is_set if cancel_event is not None else None)
         if bundle is None:
             raise ProtocolError("SCAN_CANCELLED", "Scan was cancelled before comparison completed.")
         plan_id = uuid4().hex
@@ -287,9 +325,18 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
             },
         }, False)
 
-    if command == "history":
+    if command == "cancel_scan":
+        with _SCAN_LOCK:
+            active = _ACTIVE_SCAN_EVENT
+            if active is not None:
+                active.set()
         return ({"version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
-                 "result": {"items": list(reversed(_HISTORY)), "scope": "current_sidecar_session"}}, False)
+                 "result": {"accepted": active is not None, "message": "Scan cancellation requested." if active else "No scan is running."}}, False)
+
+    if command == "history":
+        items, history_error = _load_history()
+        return ({"version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
+                 "result": {"items": items, "scope": "persistent_local_history", "retention_limit": MAX_HISTORY_ITEMS, "storage_error": history_error}}, False)
 
     if command == "health":
         plan_id = _require_string(params, "plan_id")
@@ -383,10 +430,10 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
         except (OSError, ValueError) as exc:
             raise ProtocolError("EXECUTION_BLOCKED", str(exc)) from exc
         report_data = report.to_dict()
-        _record_history("safe", report_data)
+        history_persisted = _record_history("safe", report_data)
         return ({
             "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
-            "result": {"execution": report_data, "mutations_enabled": True},
+            "result": {"execution": report_data, "mutations_enabled": True, "history_persisted": history_persisted},
         }, False)
 
     if command == "preview_reconcile":
@@ -469,10 +516,10 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
         except (OSError, ValueError) as exc:
             raise ProtocolError("EXECUTION_BLOCKED", str(exc)) from exc
         report_data = report.to_dict()
-        _record_history("reconcile", report_data)
+        history_persisted = _record_history("reconcile", report_data)
         return ({
             "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
-            "result": {"execution": report_data, "mutations_enabled": True},
+            "result": {"execution": report_data, "mutations_enabled": True, "history_persisted": history_persisted},
         }, False)
 
     if command == "preview_mirror":
@@ -543,10 +590,10 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
         except (OSError, ValueError, RuntimeError) as exc:
             raise ProtocolError("EXECUTION_BLOCKED", str(exc)) from exc
         report_data = report.to_dict()
-        _record_history("mirror", report_data)
+        history_persisted = _record_history("mirror", report_data)
         return ({
             "version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
-            "result": {"execution": report_data, "mutations_enabled": True},
+            "result": {"execution": report_data, "mutations_enabled": True, "history_persisted": history_persisted},
         }, False)
 
     if command == "preview_restore":
@@ -634,7 +681,8 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
         restore_report = {"mode": "restore", "restored": result.restored, "recovered": result.recovered,
                           "safety_backup": str(result.safety_backup) if result.safety_backup else None,
                           "error": result.error, "mutations_enabled": True}
-        _record_history("restore", restore_report)
+        history_persisted = _record_history("restore", restore_report)
+        restore_report["history_persisted"] = history_persisted
         return ({"version": PROTOCOL_VERSION, "id": request_id, "type": "result", "ok": True,
                  "result": restore_report}, False)
 
@@ -648,18 +696,65 @@ def _handle(request: object, emit_progress) -> tuple[dict[str, object], bool]:
 
 
 def main() -> int:
+    global _ACTIVE_SCAN_EVENT
+    scan_thread: threading.Thread | None = None
+
+    def finish_scan(request: object, event: threading.Event) -> None:
+        global _ACTIVE_SCAN_EVENT
+        request_id = request.get("id") if isinstance(request, dict) else None
+        try:
+            response, _ = _handle(request, _write, event)
+            _write(response)
+        except ProtocolError as exc:
+            _error(request_id, exc.code, str(exc))
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+            _error(request_id, "INTERNAL_ERROR", "The Python engine failed while processing the scan.")
+        finally:
+            with _SCAN_LOCK:
+                if _ACTIVE_SCAN_EVENT is event:
+                    _ACTIVE_SCAN_EVENT = None
+
     while True:
         raw = sys.stdin.buffer.readline(MAX_REQUEST_BYTES + 1)
         if not raw:
+            with _SCAN_LOCK:
+                active = _ACTIVE_SCAN_EVENT
+                if active is not None:
+                    active.set()
+            if scan_thread is not None:
+                scan_thread.join(timeout=10)
             return 0
         if len(raw) > MAX_REQUEST_BYTES:
             while raw and not raw.endswith(b"\n"):
                 raw = sys.stdin.buffer.readline(MAX_REQUEST_BYTES + 1)
             _error(None, "REQUEST_TOO_LARGE", "JSONL request exceeded the 1 MiB limit.")
             continue
+        request: object = None
         try:
             request = json.loads(raw.decode("utf-8"))
             request_id = request.get("id") if isinstance(request, dict) else None
+            command = request.get("command") if isinstance(request, dict) else None
+            if command == "scan":
+                with _SCAN_LOCK:
+                    if _ACTIVE_SCAN_EVENT is not None:
+                        _error(request_id, "SCAN_ALREADY_RUNNING", "A library scan is already running.")
+                        continue
+                    event = threading.Event()
+                    _ACTIVE_SCAN_EVENT = event
+                scan_thread = threading.Thread(target=finish_scan, args=(request, event), name="harmelune-sidecar-scan", daemon=True)
+                scan_thread.start()
+                continue
+            if command == "shutdown":
+                with _SCAN_LOCK:
+                    active = _ACTIVE_SCAN_EVENT
+                    if active is not None:
+                        active.set()
+                if scan_thread is not None and scan_thread.is_alive():
+                    scan_thread.join(timeout=10)
+                    if scan_thread.is_alive():
+                        _error(request_id, "SCAN_SHUTDOWN_TIMEOUT", "The scan did not stop within the shutdown deadline.")
+                        continue
             response, should_stop = _handle(request, lambda event: _write(event))
             _write(response)
             if should_stop:
@@ -674,7 +769,7 @@ def main() -> int:
         except (OSError, ValueError) as exc:
             request_id = request.get("id") if isinstance(request, dict) else None
             _error(request_id, "REQUEST_FAILED", str(exc))
-        except Exception as exc:  # Fail one request without corrupting the JSONL stream.
+        except Exception:
             request_id = request.get("id") if isinstance(request, dict) else None
             traceback.print_exc(file=sys.stderr)
             _error(request_id, "INTERNAL_ERROR", "The Python engine failed while processing the request.")
