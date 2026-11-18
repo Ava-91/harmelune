@@ -59,10 +59,15 @@ def test_native_tauri_user_journey(tmp_path: Path):
 
     screenshots = Path(os.environ.get("HARMELUNE_E2E_ARTIFACTS", "artifacts/tauri-e2e"))
     screenshots.mkdir(parents=True, exist_ok=True)
+    driver_log_path = screenshots / "tauri-driver.log"
+    driver_log = driver_log_path.open("w", encoding="utf-8")
+    # Match Tauri's documented Selenium setup: tauri-driver selects its
+    # default WebDriver port (4444) without command-line overrides.
     driver_process = subprocess.Popen(
-        ["tauri-driver", "--port", "4444"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        ["tauri-driver"],
+        stdout=driver_log,
+        stderr=subprocess.STDOUT,
+        text=True,
     )
     driver = None
     try:
@@ -70,10 +75,38 @@ def test_native_tauri_user_journey(tmp_path: Path):
         options = webdriver.ChromeOptions()
         options.set_capability("browserName", "wry")
         options.set_capability("tauri:options", {"application": str(app_path)})
-        driver = webdriver.Remote(
-            command_executor="http://127.0.0.1:4444/",
-            options=options,
-        )
+
+        # A freshly started native driver can briefly accept TCP before its
+        # WebDriver router is ready. Retry session creation, but retain the
+        # driver log and fail with its tail if the protocol handshake never
+        # becomes available.
+        session_error = None
+        for attempt in range(1, 4):
+            if driver_process.poll() is not None:
+                break
+            try:
+                driver = webdriver.Remote(
+                    command_executor="http://127.0.0.1:4444/",
+                    options=options,
+                )
+                break
+            except Exception as exc:
+                session_error = exc
+                if attempt < 3:
+                    time.sleep(2 * attempt)
+
+        if driver is None:
+            driver_log.flush()
+            try:
+                log_lines = driver_log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                log_lines = []
+            log_tail = "\\n".join(log_lines[-100:]) or "(tauri-driver produced no log output)"
+            raise RuntimeError(
+                "Could not create a WebDriver session after 3 attempts. "
+                f"Last error: {session_error}\\n"
+                f"tauri-driver log ({driver_log_path}):\\n{log_tail}"
+            ) from session_error
         driver.set_page_load_timeout(30)
         wait = WebDriverWait(driver, 30)
 
@@ -175,9 +208,12 @@ def test_native_tauri_user_journey(tmp_path: Path):
     finally:
         if driver is not None:
             driver.quit()
-        driver_process.terminate()
-        try:
-            driver_process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            driver_process.kill()
-            driver_process.wait(timeout=5)
+        if driver_process.poll() is None:
+            driver_process.terminate()
+            try:
+                driver_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                driver_process.kill()
+                driver_process.wait(timeout=5)
+        driver_log.flush()
+        driver_log.close()
