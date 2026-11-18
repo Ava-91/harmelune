@@ -80,6 +80,7 @@ jobs:
           }
           & "$cargoBin\\tauri-driver.exe" --version
           msedgedriver --version
+          python -c "import selenium; print('Selenium', selenium.__version__)"
 
       - name: Exercise the real Tauri desktop user journey
         shell: pwsh
