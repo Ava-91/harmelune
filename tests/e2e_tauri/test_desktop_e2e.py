@@ -101,11 +101,11 @@ def test_native_tauri_user_journey(tmp_path: Path):
                 log_lines = driver_log_path.read_text(encoding="utf-8", errors="replace").splitlines()
             except OSError:
                 log_lines = []
-            log_tail = "\\n".join(log_lines[-100:]) or "(tauri-driver produced no log output)"
+            log_tail = "\n".join(log_lines[-100:]) or "(tauri-driver produced no log output)"
             raise RuntimeError(
                 "Could not create a WebDriver session after 3 attempts. "
-                f"Last error: {session_error}\\n"
-                f"tauri-driver log ({driver_log_path}):\\n{log_tail}"
+                f"Last error: {session_error}\n"
+                f"tauri-driver log ({driver_log_path}):\n{log_tail}"
             ) from session_error
         driver.set_page_load_timeout(30)
         wait = WebDriverWait(driver, 30)
