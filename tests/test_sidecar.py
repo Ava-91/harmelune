@@ -65,7 +65,9 @@ def run_sidecar_and_wait_for_scan(scan_request: str, config_dir: Path) -> subpro
     process.stdin.write(request("stop-1", "shutdown") + "\n")
     process.stdin.flush()
     process.stdin.close()
-    remaining_stdout, stderr = process.communicate(timeout=30)
+    remaining_stdout = process.stdout.read()
+    stderr = process.stderr.read() if process.stderr is not None else ""
+    process.wait(timeout=30)
     return subprocess.CompletedProcess(
         process.args, process.returncode, "".join(received) + remaining_stdout, stderr
     )
