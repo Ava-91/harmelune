@@ -27,6 +27,35 @@ async function engineRequest(command: string, params: Record<string, unknown> = 
   });
 }
 
+function RecoveryStatus({ report }: { report: Record<string, any> }) {
+  const rollbackFailures = Array.isArray(report.rollback_failures) ? report.rollback_failures : [];
+  const errors = Array.isArray(report.errors) ? report.errors : [];
+  if (rollbackFailures.length > 0) {
+    return <div className="error-notice" role="alert">
+      <strong>Automatic rollback was incomplete — manual recovery is required.</strong>
+      <p>Do not retry this operation. Keep both libraries unchanged, preserve every listed backup, and inspect the rollback failures before restoring anything.</p>
+      <ul>{rollbackFailures.map((item: string, index: number) => <li key={index}>{item}</li>)}</ul>
+      {report.backups?.length > 0 && <p>Verified backup locations: {report.backups.join(", ")}</p>}
+    </div>;
+  }
+  if (report.rolled_back) {
+    return <div className="notice" role="status">
+      <div className="notice-icon">i</div><div><strong>Rollback completed.</strong>
+      <p>The transaction reports that its changes were rolled back. Keep the backup until you have independently checked both libraries.</p>
+      {report.backups?.length > 0 && <p>Backup locations: {report.backups.join(", ")}</p>}</div>
+    </div>;
+  }
+  if (report.final_status === "FAILED" || errors.length > 0) {
+    return <div className="error-notice" role="alert">
+      <strong>Operation failed — inspect the report before retrying.</strong>
+      <p>Preserve the current libraries and any verified backups. If the result is uncertain, rescan both libraries and review History before starting another operation.</p>
+      {errors.slice(0, 8).map((item: string, index: number) => <p key={index}>{item}</p>)}
+      {report.backups?.length > 0 && <p>Backup locations: {report.backups.join(", ")}</p>}
+    </div>;
+  }
+  return null;
+}
+
 function PreviewPanel({ preview }: { preview: SafePreview }) {
   return (
     <div className="preview-result">
@@ -735,6 +764,7 @@ function App() {
               )}
               {executionReport && (
                 <div className="preview-result execution-report">
+                  <RecoveryStatus report={executionReport} />
                   <h3>Safe execution report</h3>
                   <div className="metrics-grid">
                     <div className="metric-card"><span>Final status</span><strong>{String(executionReport.final_status)}</strong></div>
@@ -809,6 +839,7 @@ function App() {
               )}
               {reconcileReport && (
                 <div className="preview-result execution-report">
+                  <RecoveryStatus report={reconcileReport} />
                   <h3>Reconcile execution report</h3>
                   <div className="metrics-grid">
                     <div className="metric-card"><span>Final status</span><strong>{String(reconcileReport.final_status)}</strong></div>
@@ -978,6 +1009,7 @@ function App() {
               )}
               {mirrorReport && (
                 <div className="preview-result execution-report">
+                  <RecoveryStatus report={mirrorReport} />
                   <h3>Mirror execution report</h3>
                   <div className="metrics-grid">
                     <div className="metric-card"><span>Final status</span><strong>{String(mirrorReport.final_status)}</strong></div>
@@ -997,7 +1029,7 @@ function App() {
           {active === "history" && <>
             <div className="section-title-row"><div><h2>Sync history</h2><p>Completed operation reports stored locally on this device.</p></div><span className="subtle-label">LOCAL HISTORY</span></div>
             <div className="notice"><div className="notice-icon">i</div><div><strong>Persistent local history</strong><p>Reports survive application restarts. The database is stored in Harmelune's local application-data folder; up to 1,000 recent operations are retained.</p></div></div>
-            {historyItems.some((item) => item.report?.final_status === "FAILED" || item.report?.error) && <div className="error-notice"><strong>Some recent operations need attention.</strong><p>Open each full report, preserve its verified backup path, and use Backups & recovery to verify a backup before restoring. Do not retry a failed destructive operation automatically.</p></div>}
+            {historyItems.some((item) => item.report?.final_status === "FAILED" || item.report?.error || (item.report?.rollback_failures ?? []).length > 0 || (item.report?.errors ?? []).length > 0) && <div className="error-notice"><strong>Some recent operations need attention.</strong><p>Open each full report, preserve its verified backup path, and use Backups & recovery to verify a backup before restoring. Do not retry a failed destructive operation automatically.</p></div>}
             {historyItems.length === 0 && !sectionLoading && <p className="review-reason">No completed operations have been recorded yet.</p>}
             
             {sectionLoading && <div className="table-empty">Loading history…</div>}
