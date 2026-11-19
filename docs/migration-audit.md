@@ -1,90 +1,65 @@
-# Desktop migration audit (2026-10-16)
+# Desktop migration and stabilization audit
 
-## Scope and repository state
+## Architecture
 
-This audit was performed against the current `main` tree, not an earlier conversation snapshot.
+- Legacy Tkinter entry point: `app.py`; shared orchestration: `harmelune/services.py`.
+- JSON Lines protocol: `harmelune/sidecar.py` (v1).
+- React/TypeScript/Vite UI: `desktop/`; Tauri v2/Rust shell: `desktop/src-tauri/`.
+- Windows bundle target: NSIS with `binaries/harmelune-sidecar.exe`.
+- Python remains authoritative for matching, path safety, previews, backups, restore, and transactions.
 
-- Repository: `Ava-91/harmelune`
-- Audited `main` commit: `e005c5e552995080b51274e042ed04ee33822610`
-- Default branch: `main`
-- Open pull requests at audit time: none
-- Open issues at audit time: none
-- Existing migration PRs: #153 (Python services), #154 (Tauri/React shell), and #155 (read-only sidecar) are merged.
+The sidecar exposes scan/listing, Safe/Reconcile/Mirror/Restore previews and gated execution. It is not merely read-only.
 
-This commit already contains Phase 1 and Phase 2 work. This document records the verified baseline and remaining risks; it does not replace the legacy app or enable desktop-side file mutations.
+## Phase 1 — stabilization
 
-## Actual dependencies and packaging
+### Updated here
+- Corrected this audit to describe the real command surface and execution gates.
+- Corrected the desktop banner: Mirror and Restore are available behind explicit safety gates, not locked.
+- Added Health and History protocol endpoints and desktop views (see Phase 2).
 
-### Python
+### Remaining gaps
+- **Nightly integrity:** workflow runs on Ubuntu and Windows and now uses PowerShell-safe folded pytest syntax. Confirm a post-fix Actions run passes both legs; code inspection is not test evidence.
+- **Timeout/cancellation:** Rust currently performs synchronous stdout reads while holding the engine mutex. A hung sidecar can block a request; no user cancellation command reaches the Python scanner's existing cancellation callback. Follow-up: dedicated reader thread, bounded line size, deadlines, cancellation propagation, and child termination/reaping with plan invalidation. Cancellation is not claimed implemented.
+- **npm lockfile:** `desktop/package-lock.json` is absent and CI runs `npm install`. Generate it with npm using the supported Node version, commit it, then switch CI to `npm ci`. Do not guess transitive versions or integrity hashes.
+- **Packaging:** build/check workflows do not prove clean-machine NSIS installation or end-to-end operation.
 
-- Runtime: `requirements.txt` includes Mutagen (`>=1.48.1,<2`) and Pillow (`>=12.3.0,<13`).
-- Development/build: `requirements-dev.txt` adds pytest (`>=9.1.1,<10`) and PyInstaller (`>=6.22.3,<7`).
-- Existing app entry point: `app.py` (Tkinter).
-- Shared orchestration: `harmelune/services.py`.
-- Read-only protocol process: `harmelune/sidecar.py`.
-- Sidecar spec: `harmelune-sidecar.spec`; legacy app spec remains `harmelune.spec`.
+## Phase 2 — desktop completion
 
-### Desktop
+### Sync History
+The UI calls `history` and renders successful Safe, Reconcile, Mirror, and Restore reports newest-first with timestamps, statuses, counts, and full report details. **Limitation:** history is sidecar-session scoped, capped at 100, and lost when the process exits. It is not a durable audit log; persistent/exportable history remains future work.
 
-- Frontend: React 19, TypeScript 5.9, Vite 6, Tauri API/plugin v2.
-- Rust shell: Tauri v2 and `serde_json`.
-- Config: `desktop/src-tauri/tauri.conf.json`; only the dialog-open plugin is installed, and the default capability grants `core:default` and `dialog:allow-open`.
-- The bundle currently targets Windows NSIS and expects `binaries/harmelune-sidecar.exe`.
-- No npm lockfile is present in the current tree. The desktop workflow runs `npm install`, so dependency resolution is not fully reproducible yet.
+### Library Health
+The UI calls `health` for the current scan and displays per-library track count, metadata completeness, artwork coverage, duplicate tracks/groups, scan errors, unsupported audio-like files, and unresolved conflicts/fuzzy matches. The sidecar delegates to `harmelune.health.build_health_report`; no frontend file analysis is duplicated. Health requires an active in-memory scan plan.
 
-## Current architecture and phase status
+### Navigation and states
+History and Health have dedicated loading, empty, and error states rather than the generic migration placeholder. The banner now reflects the implemented modes.
 
-### Phase 1 — Python service layer
+## Safety invariants
+- Both roots must be valid, separate, and non-overlapping.
+- Scan/preview are read-only; incomplete scans cannot be applied.
+- Fuzzy matches/conflicts require explicit review; plans are revalidated for freshness.
+- Verified backups stay outside protected libraries.
+- Safe is copy-only; Reconcile never deletes.
+- Mirror may delete/replace and requires exact `MIRROR`; Restore requires verified backup, exact target identity, safety backup, and exact `RESTORE`.
+- Interrupted transactions must not auto-resume.
+- Destructive tests use temporary/synthetic/disposable libraries only.
 
-`harmelune/services.py` exposes `scan_libraries`, `preview_workflow`, and `execute_workflow`. Current `app.py` calls these services for scan, preview, and Safe/Reconcile/Mirror execution while retaining the Tkinter window, dialogs, and worker/UI-thread handling.
+## Verification checklist
+- [ ] `python -m pytest -q` on Windows and Ubuntu.
+- [ ] Confirm Nightly integrity succeeds on both matrix legs after the PowerShell fix.
+- [ ] Generate/commit `desktop/package-lock.json`, then run `npm ci` and `npm run build`.
+- [ ] Run `cargo check --manifest-path desktop/src-tauri/Cargo.toml`.
+- [ ] Add protocol tests for Health/History, stale plans, empty history, and the 100-entry cap.
+- [ ] Exercise both sections in the actual Tauri app on Windows.
+- [ ] Complete `docs/manual-ui-qa.md`; install/smoke-test NSIS on clean Windows with disposable libraries.
 
-Regression coverage includes `tests/test_services.py`, `tests/test_settings.py`, and the existing scan, review, freshness, path-safety, backup, transaction, recovery, and mode-specific test modules. Synthetic WAV fixtures and temporary directories are used by the service tests.
+Automated CI/source review do not establish clean-machine installer correctness or manual accessibility/usability.
 
-### Phase 2 — Tauri v2 + React/TypeScript shell
 
-The `desktop/` project contains the React UI, TypeScript/Vite configuration, Rust shell, Tauri configuration, and restricted capability file. It is separate from `app.py`; the Tkinter entry point and its existing packaging are retained.
+## Request lifecycle and operation history
 
-### Phase 3 — read-only sidecar baseline
+The desktop bridge uses a dedicated stdout reader and request-ID dispatch so progress events and concurrent requests (including scan cancellation) do not block one another. Request/response JSONL lines are bounded, ordinary requests have a 30-second deadline, and scan/execute requests have a 10-minute response deadline. A deadline is not permission to kill the Python process: it may be inside a filesystem transaction. On timeout, the desktop reports that the result is uncertain and leaves the engine running; check durable History before retrying. Application shutdown queues a graceful sidecar shutdown and does not force-kill a possibly mutating process.
 
-The current Python protocol is version 1 and uses JSON Lines. The sidecar exposes only `hello`, `scan`, `list_tracks`, and `shutdown`. It does not expose execution, arbitrary shell commands, or arbitrary Python evaluation. The Rust bridge starts the sidecar as a child process, uses stdin/stdout pipes, forwards progress events, and attempts clean shutdown on application exit.
+The sidecar accepts a concurrent `cancel_scan` command while its scan worker is active. Cancellation is propagated into the existing scanner traversal callback. A cancelled scan does not publish a comparison plan; its partial results are discarded and the UI requires a fresh scan. Cancellation is cooperative at file traversal boundaries and cannot interrupt an individual filesystem/hash operation already in progress.
 
-This is a read-only integration baseline, not a completed migration of review, preview, or apply operations.
-
-## Safety invariants to preserve
-
-The existing safety-critical engine remains in Python. The desktop work must continue to use its established functions rather than reimplementing filesystem decisions in Rust or TypeScript.
-
-- Validate that both library roots exist, are directories, and are separate/non-overlapping.
-- Keep scanning and dry-run preview read-only; incomplete/error scans must not be treated as safe-to-apply.
-- Keep fuzzy matches and conflicts unconfirmed until explicit user review.
-- Revalidate plan freshness before applying; stale plans must be rejected and rescanned.
-- Require verified backups before mutations and reject backup paths that overlap protected libraries.
-- Safe mode must not delete or overwrite destination files.
-- Reconcile must apply only explicit decisions and must not delete files.
-- Mirror remains the last mode to migrate because it can replace/delete destination files and requires the exact `MIRROR` confirmation.
-- Restore must require a verified backup, exact `RESTORE` confirmation, a safety backup of the target, and recovery/verification handling.
-- Never automatically resume an interrupted transaction; show recovery warnings and inspect journals/backups.
-- Test using temporary directories and synthetic audio fixtures or disposable copies only, never a user's only originals.
-
-## Verification observed
-
-The following GitHub Actions runs were inspected on 2026-10-16:
-
-- Main-branch tests: [run 38934666913](https://github.com/Ava-91/harmelune/actions/runs/38934666913) — completed successfully.
-- Main-branch desktop workflow: [run 38934667009](https://github.com/Ava-91/harmelune/actions/runs/38934667009) — completed successfully.
-- Phase 1 PR checks: [tests](https://github.com/Ava-91/harmelune/actions/runs/38934652550), [desktop workflow](https://github.com/Ava-91/harmelune/actions/runs/38934652705), and [Windows build](https://github.com/Ava-91/harmelune/actions/runs/38934652497) — completed successfully.
-- Phase 2 PR checks: [tests](https://github.com/Ava-91/harmelune/actions/runs/38934622136), [desktop workflow](https://github.com/Ava-91/harmelune/actions/runs/38934622129), and [Windows build](https://github.com/Ava-91/harmelune/actions/runs/38934622142) — completed successfully.
-
-These are hosted CI results. No local Python, npm, or Cargo commands were executed as part of this audit, and these results do not prove manual testing on a clean Windows machine with a real user library.
-
-## Risks and next steps
-
-1. **Dependency reproducibility:** add and commit a desktop lockfile, then use `npm ci` in CI.
-2. **Protocol hardening:** add bounded response-line handling and an explicit timeout/cancellation strategy for stalled child processes. Keep stdout reserved for JSONL and diagnostics on stderr.
-3. **Progress/cancellation UX:** the protocol can report scan progress, but cancellation of an in-flight scan is not yet a desktop workflow.
-4. **UI/backend contract:** add protocol-level schema/contract tests for every exposed command before adding new commands.
-5. **Phase 4 review and preview:** migrate decisions and dry-run display first; keep apply unavailable until the backend protocol can represent a reviewed plan, blockers, backup verification, and stale-plan errors.
-6. **Execution migration:** enable Safe first, then Reconcile; migrate Mirror last with exact confirmation. Keep the Tkinter app usable throughout.
-7. **Packaging validation:** verify the packaged sidecar resource path and NSIS installer on a clean Windows environment. CI compile/package checks are not a substitute for an end-to-end install and disposable-library smoke test.
-
-No safety-critical behavior should be duplicated in the frontend. Python remains the authoritative music-processing and synchronization engine.
+Completed execution reports are stored in a local SQLite database under Harmelune's application configuration directory, with a 1,000-record retention limit. If persistence fails after a filesystem operation, the operation response still reports the execution result and includes `history_persisted: false`; it is never reported as rolled back merely because history storage failed.

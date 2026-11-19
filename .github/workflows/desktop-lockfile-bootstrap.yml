@@ -1,0 +1,39 @@
+name: Generate desktop npm lockfile
+
+on:
+  push:
+    branches:
+      - feat/phase-1-2-stabilization-desktop
+    paths:
+      - "desktop/package.json"
+      - ".github/workflows/desktop-lockfile-bootstrap.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  generate-lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref_name }}
+          persist-credentials: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Generate npm's canonical lockfile
+        working-directory: desktop
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - name: Commit lockfile to this feature branch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add desktop/package-lock.json
+          if git diff --cached --quiet; then
+            echo "The npm lockfile is already current."
+            exit 0
+          fi
+          git commit -m "build(desktop): add npm lockfile"
+          git push origin "HEAD:${GITHUB_REF_NAME}"

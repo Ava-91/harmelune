@@ -41,6 +41,38 @@ def parse_output(stdout: str) -> list[dict]:
     return [json.loads(line) for line in stdout.splitlines() if line.strip()]
 
 
+def run_sidecar_and_wait_for_scan(scan_request: str, config_dir: Path) -> subprocess.CompletedProcess[str]:
+    """Send a scan, wait for its correlated response, then shut the sidecar down."""
+    env = os.environ.copy()
+    env["XDG_CONFIG_HOME"] = str(config_dir)
+    process = subprocess.Popen(
+        [sys.executable, "-m", "harmelune.sidecar"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, env=env,
+    )
+    assert process.stdin is not None and process.stdout is not None
+    received = []
+    process.stdin.write(scan_request + "\n")
+    process.stdin.flush()
+    while True:
+        line = process.stdout.readline()
+        if not line:
+            raise AssertionError("Sidecar closed stdout before returning the scan response.")
+        received.append(line)
+        message = json.loads(line)
+        if message.get("id") == "scan-1" and message.get("type") in {"result", "error"}:
+            break
+    process.stdin.write(request("stop-1", "shutdown") + "\n")
+    process.stdin.flush()
+    process.stdin.close()
+    remaining_stdout = process.stdout.read()
+    stderr = process.stderr.read() if process.stderr is not None else ""
+    process.wait(timeout=30)
+    return subprocess.CompletedProcess(
+        process.args, process.returncode, "".join(received) + remaining_stdout, stderr
+    )
+
+
 def test_protocol_hello_and_shutdown_are_clean(tmp_path: Path):
     completed = run_sidecar([
         request("hello-1", "hello"),
@@ -77,10 +109,10 @@ def test_scan_progress_and_paged_rows_use_only_temp_synthetic_audio(tmp_path: Pa
     b.mkdir()
     write_wav(a / "Only A.wav", 80)
     write_wav(b / "Only B.wav", 83)
-    completed = run_sidecar([
+    completed = run_sidecar_and_wait_for_scan(
         request("scan-1", "scan", {"library_a": str(a), "library_b": str(b)}),
-        request("stop-1", "shutdown"),
-    ], tmp_path / "config")
+        tmp_path / "config",
+    )
 
     assert completed.returncode == 0
     messages = parse_output(completed.stdout)
@@ -670,3 +702,136 @@ def test_reconcile_execution_rejects_changed_decisions_backup_path_and_stale_pla
         raise AssertionError("Stale Reconcile plans must not execute.")
     assert not backup_root.exists()
     assert not (b / "Only A.wav").exists()
+
+def test_health_protocol_returns_current_scan_health(tmp_path: Path, monkeypatch):
+    from harmelune import sidecar
+
+    a, b = tmp_path / "Health A", tmp_path / "Health B"
+    a.mkdir()
+    b.mkdir()
+    write_wav(a / "One.wav", 64)
+    monkeypatch.setattr(sidecar, "_PLANS", {})
+    scan_response, _ = sidecar._handle(
+        json.loads(request("scan-health", "scan", {"library_a": str(a), "library_b": str(b)})),
+        lambda _event: None,
+    )
+    plan_id = scan_response["result"]["plan_id"]
+    health_response, _ = sidecar._handle(
+        json.loads(request("health-1", "health", {"plan_id": plan_id})), lambda _event: None
+    )
+    assert health_response["ok"] is True
+    assert health_response["result"]["library_a"]["track_count"] == 1
+    assert health_response["result"]["library_b"]["track_count"] == 0
+    from harmelune.sidecar import ProtocolError
+
+    try:
+        sidecar._handle(
+            json.loads(request("health-missing", "health", {"plan_id": "missing"})),
+            lambda _event: None,
+        )
+    except ProtocolError as exc:
+        assert exc.code == "PLAN_NOT_FOUND"
+    else:
+        raise AssertionError("Health must reject an expired scan plan.")
+
+
+def test_history_persists_across_reads_and_is_capped(tmp_path: Path, monkeypatch):
+    from harmelune import sidecar
+
+    monkeypatch.setattr(sidecar, "default_config_dir", lambda: tmp_path / "app-data")
+    for index in range(sidecar.MAX_HISTORY_ITEMS + 2):
+        assert sidecar._record_history("safe", {"index": index}) is True
+
+    response, _ = sidecar._handle(json.loads(request("history-1", "history")), lambda _event: None)
+    items = response["result"]["items"]
+    assert response["result"]["scope"] == "persistent_local_history"
+    assert response["result"]["retention_limit"] == sidecar.MAX_HISTORY_ITEMS
+    assert len(items) == sidecar.MAX_HISTORY_ITEMS
+    assert items[0]["report"]["index"] == sidecar.MAX_HISTORY_ITEMS + 1
+    assert items[-1]["report"]["index"] == 2
+
+    # A second load reads the same SQLite-backed records, independent of the
+    # in-memory state of the process that recorded them.
+    loaded_again, error = sidecar._load_history()
+    assert error is None
+    assert loaded_again == items
+
+
+def test_scan_cancel_event_is_passed_into_the_shared_scan_service(tmp_path: Path, monkeypatch):
+    import threading
+    from harmelune import sidecar
+
+    cancelled = threading.Event()
+    cancelled.set()
+    observed = {}
+
+    def fake_scan(*args, **kwargs):
+        observed["cancel"] = kwargs["cancel"]
+        assert kwargs["cancel"]() is True
+        return None
+
+    monkeypatch.setattr(sidecar, "scan_libraries", fake_scan)
+    try:
+        sidecar._handle(
+            json.loads(request("cancelled-scan", "scan", {
+                "library_a": str(tmp_path / "a"), "library_b": str(tmp_path / "b")
+            })),
+            lambda _event: None,
+            cancelled,
+        )
+    except sidecar.ProtocolError as exc:
+        assert exc.code == "SCAN_CANCELLED"
+    else:
+        raise AssertionError("A cancelled scan must not create a plan.")
+    assert observed["cancel"]() is True
+
+
+def test_cancel_scan_command_sets_active_scan_event(monkeypatch):
+    import threading
+    from harmelune import sidecar
+
+    event = threading.Event()
+    monkeypatch.setattr(sidecar, "_ACTIVE_SCAN_EVENT", event)
+    response, _ = sidecar._handle(json.loads(request("cancel", "cancel_scan")), lambda _event: None)
+    assert response["ok"] is True
+    assert response["result"]["accepted"] is True
+    assert event.is_set()
+
+
+def test_sidecar_main_processes_cancel_while_scan_is_running(monkeypatch, tmp_path: Path):
+    import io
+    import json
+    import threading
+    import time
+    from types import SimpleNamespace
+    from harmelune import sidecar
+
+    started = threading.Event()
+
+    def blocking_scan(*args, **kwargs):
+        started.set()
+        cancel = kwargs["cancel"]
+        while not cancel():
+            time.sleep(0.002)
+        return None
+
+    input_lines = [
+        request("scan-live", "scan", {
+            "library_a": str(tmp_path / "a"), "library_b": str(tmp_path / "b")
+        }),
+        request("cancel-live", "cancel_scan"),
+        request("shutdown-live", "shutdown"),
+    ]
+    stdout = io.StringIO()
+    monkeypatch.setattr(sidecar, "scan_libraries", blocking_scan)
+    monkeypatch.setattr(sidecar.sys, "stdin", SimpleNamespace(buffer=io.BytesIO(("\n".join(input_lines) + "\n").encode())))
+    monkeypatch.setattr(sidecar.sys, "stdout", stdout)
+    monkeypatch.setattr(sidecar, "_ACTIVE_SCAN_EVENT", None)
+
+    assert sidecar.main() == 0
+    assert started.is_set()
+    messages = [json.loads(line) for line in stdout.getvalue().splitlines()]
+    cancel_response = next(item for item in messages if item.get("id") == "cancel-live")
+    scan_response = next(item for item in messages if item.get("id") == "scan-live")
+    assert cancel_response["result"]["accepted"] is True
+    assert scan_response["error"]["code"] == "SCAN_CANCELLED"

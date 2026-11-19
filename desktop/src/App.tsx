@@ -27,6 +27,35 @@ async function engineRequest(command: string, params: Record<string, unknown> = 
   });
 }
 
+function RecoveryStatus({ report }: { report: Record<string, any> }) {
+  const rollbackFailures = Array.isArray(report.rollback_failures) ? report.rollback_failures : [];
+  const errors = Array.isArray(report.errors) ? report.errors : [];
+  if (rollbackFailures.length > 0) {
+    return <div className="error-notice" role="alert">
+      <strong>Automatic rollback was incomplete — manual recovery is required.</strong>
+      <p>Do not retry this operation. Keep both libraries unchanged, preserve every listed backup, and inspect the rollback failures before restoring anything.</p>
+      <ul>{rollbackFailures.map((item: string, index: number) => <li key={index}>{item}</li>)}</ul>
+      {report.backups?.length > 0 && <p>Verified backup locations: {report.backups.join(", ")}</p>}
+    </div>;
+  }
+  if (report.rolled_back) {
+    return <div className="notice" role="status">
+      <div className="notice-icon">i</div><div><strong>Rollback completed.</strong>
+      <p>The transaction reports that its changes were rolled back. Keep the backup until you have independently checked both libraries.</p>
+      {report.backups?.length > 0 && <p>Backup locations: {report.backups.join(", ")}</p>}</div>
+    </div>;
+  }
+  if (report.final_status === "FAILED" || errors.length > 0) {
+    return <div className="error-notice" role="alert">
+      <strong>Operation failed — inspect the report before retrying.</strong>
+      <p>Preserve the current libraries and any verified backups. If the result is uncertain, rescan both libraries and review History before starting another operation.</p>
+      {errors.slice(0, 8).map((item: string, index: number) => <p key={index}>{item}</p>)}
+      {report.backups?.length > 0 && <p>Backup locations: {report.backups.join(", ")}</p>}
+    </div>;
+  }
+  return null;
+}
+
 function PreviewPanel({ preview }: { preview: SafePreview }) {
   return (
     <div className="preview-result">
@@ -92,8 +121,14 @@ function App() {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("all");
   const [scanning, setScanning] = useState(false);
+  const [scanCancelRequested, setScanCancelRequested] = useState(false);
   const [progress, setProgress] = useState("");
   const [error, setError] = useState("");
+  const [historyItems, setHistoryItems] = useState<Record<string, any>[]>([]);
+  const [historyScope, setHistoryScope] = useState("persistent_local_history");
+  const [historyStorageError, setHistoryStorageError] = useState("");
+  const [healthReport, setHealthReport] = useState<Record<string, any> | null>(null);
+  const [sectionLoading, setSectionLoading] = useState(false);
 
   useEffect(() => {
     if (!isTauri()) {
@@ -158,6 +193,32 @@ function App() {
     return () => { cancelled = true; };
   }, [active, planId, reviewPage]);
 
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    if (active === "history") {
+      setSectionLoading(true);
+      void engineRequest("history").then((response) => {
+        if (cancelled) return;
+        if (!response.ok) throw new Error(response.error?.message ?? "Could not load sync history.");
+        setHistoryItems((response.result?.items ?? []) as Record<string, any>[]);
+        setHistoryScope(String(response.result?.scope ?? "persistent_local_history"));
+        setHistoryStorageError(String(response.result?.storage_error ?? ""));
+      }).catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); })
+        .finally(() => { if (!cancelled) setSectionLoading(false); });
+    } else if (active === "health") {
+      if (!planId) { setHealthReport(null); return () => { cancelled = true; }; }
+      setSectionLoading(true);
+      void engineRequest("health", { plan_id: planId }).then((response) => {
+        if (cancelled) return;
+        if (!response.ok) throw new Error(response.error?.message ?? "Could not load library health.");
+        setHealthReport(response.result ?? null);
+      }).catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); })
+        .finally(() => { if (!cancelled) setSectionLoading(false); });
+    }
+    return () => { cancelled = true; };
+  }, [active, planId]);
+
   const chooseFolder = async (which: "a" | "b") => {
     setError("");
     try {
@@ -198,6 +259,7 @@ function App() {
     }
     setError("");
     setScanning(true);
+    setScanCancelRequested(false);
     setProgress("Starting read-only scan…");
     setActive("library");
     try {
@@ -229,10 +291,31 @@ function App() {
       setActive("compare");
       setProgress(result.summary.safe_to_preview ? "Scan complete · no files changed" : "Scan has issues · review errors before proceeding");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-      setProgress("");
+      const message = reason instanceof Error ? reason.message : String(reason);
+      if (message.toLocaleLowerCase().includes("cancel")) {
+        setError("Scan cancelled. Partial results were discarded; run a fresh scan before previewing or applying changes.");
+        setProgress("Scan cancelled · no files changed");
+      } else {
+        setError(message);
+        setProgress("");
+      }
     } finally {
       setScanning(false);
+      setScanCancelRequested(false);
+    }
+  };
+
+  const cancelScan = async () => {
+    if (!scanning || scanCancelRequested) return;
+    setScanCancelRequested(true);
+    setProgress("Requesting scan cancellation…");
+    try {
+      const response = await engineRequest("cancel_scan");
+      if (!response.ok) throw new Error(response.error?.message ?? "Could not request scan cancellation.");
+      if (!response.result?.accepted) setProgress("No active scan was found.");
+    } catch (reason) {
+      setScanCancelRequested(false);
+      setError(reason instanceof Error ? reason.message : String(reason));
     }
   };
 
@@ -574,7 +657,7 @@ function App() {
 
           <div className="notice" role="status">
             <div className="notice-icon" aria-hidden="true">i</div>
-            <div><strong>Safe and Reconcile execution require explicit approval</strong><p>Both workflows require a fresh preview, exact typed confirmation, and verified backups outside both libraries. Reconcile applies only the saved explicit decisions. Mirror and Restore remain locked.</p></div>
+            <div><strong>Safe and Reconcile execution require explicit approval</strong><p>Safe, Reconcile, Mirror, and Restore require a fresh preview, exact typed confirmation, and verified backups. Reconcile applies only saved explicit decisions; Mirror and Restore have their own final safety gates.</p></div>
           </div>
 
           {active === "library" && (
@@ -583,18 +666,18 @@ function App() {
               <div className="library-grid">
                 <article className="library-card">
                   <div className="card-topline"><span className="library-letter">A</span><span className="card-state">{libraryA ? "FOLDER SELECTED" : "NOT SELECTED"}</span></div>
-                  <h3>Library A</h3><p className="path-placeholder path-value">{libraryA || "No folder selected"}</p>
-                  <button className="secondary-button" onClick={() => void chooseFolder("a")}>Choose folder…</button>
+                  <h3>Library A</h3><label htmlFor="library-a-path">Folder path</label><input id="library-a-path" aria-label="Library A folder path" value={libraryA} onChange={(event) => setLibraryA(event.target.value)} placeholder="Enter a folder path or choose below…" />
+                  <button className="secondary-button" onClick={() => void chooseFolder("a")}>Browse folders…</button>
                   <div className="card-footer"><span className="folder-mark">▱</span> {summary ? `${summary.tracks_a} audio tracks found` : "Music source or destination"}</div>
                 </article>
                 <article className="library-card">
                   <div className="card-topline"><span className="library-letter second">B</span><span className="card-state">{libraryB ? "FOLDER SELECTED" : "NOT SELECTED"}</span></div>
-                  <h3>Library B</h3><p className="path-placeholder path-value">{libraryB || "No folder selected"}</p>
-                  <button className="secondary-button" onClick={() => void chooseFolder("b")}>Choose folder…</button>
+                  <h3>Library B</h3><label htmlFor="library-b-path">Folder path</label><input id="library-b-path" aria-label="Library B folder path" value={libraryB} onChange={(event) => setLibraryB(event.target.value)} placeholder="Enter a folder path or choose below…" />
+                  <button className="secondary-button" onClick={() => void chooseFolder("b")}>Browse folders…</button>
                   <div className="card-footer"><span className="folder-mark">▱</span> {summary ? `${summary.tracks_b} audio tracks found` : "Music source or destination"}</div>
                 </article>
               </div>
-              <div className="scan-actions"><button className="primary-button" disabled={scanning || !isTauri()} onClick={() => void scan()}>{scanning ? "Scanning…" : "Scan & compare libraries"}</button><span>{progress || "Read-only scan · no backups or changes"}</span></div>
+              <div className="scan-actions"><button className="primary-button" disabled={scanning || !isTauri()} onClick={() => void scan()}>{scanning ? "Scanning…" : "Scan & compare libraries"}</button>{scanning && <button className="secondary-button" disabled={scanCancelRequested} onClick={() => void cancelScan()}>{scanCancelRequested ? "Cancelling…" : "Cancel scan"}</button>}<span role="status" aria-live="polite">{progress || "Read-only scan · no backups or changes"}</span></div>
             </>
           )}
 
@@ -681,6 +764,7 @@ function App() {
               )}
               {executionReport && (
                 <div className="preview-result execution-report">
+                  <RecoveryStatus report={executionReport} />
                   <h3>Safe execution report</h3>
                   <div className="metrics-grid">
                     <div className="metric-card"><span>Final status</span><strong>{String(executionReport.final_status)}</strong></div>
@@ -755,6 +839,7 @@ function App() {
               )}
               {reconcileReport && (
                 <div className="preview-result execution-report">
+                  <RecoveryStatus report={reconcileReport} />
                   <h3>Reconcile execution report</h3>
                   <div className="metrics-grid">
                     <div className="metric-card"><span>Final status</span><strong>{String(reconcileReport.final_status)}</strong></div>
@@ -924,6 +1009,7 @@ function App() {
               )}
               {mirrorReport && (
                 <div className="preview-result execution-report">
+                  <RecoveryStatus report={mirrorReport} />
                   <h3>Mirror execution report</h3>
                   <div className="metrics-grid">
                     <div className="metric-card"><span>Final status</span><strong>{String(mirrorReport.final_status)}</strong></div>
@@ -940,9 +1026,42 @@ function App() {
             </>
           )}
 
-          {active !== "library" && active !== "compare" && active !== "review" && active !== "mirror" && active !== "backups" && (
-            <div className="empty-section"><div className="empty-icon" aria-hidden="true">{section.mark}</div><h2>{section.label} is waiting for its safety workflow</h2><p>{section.hint}. This section remains unavailable until review, freshness validation, verified backups, and recovery behavior are connected to the Python engine.</p><button className="secondary-button" onClick={() => setActive("library")}>Back to library workspace</button></div>
-          )}
+          {active === "history" && <>
+            <div className="section-title-row"><div><h2>Sync history</h2><p>Completed operation reports stored locally on this device.</p></div><span className="subtle-label">LOCAL HISTORY</span></div>
+            <div className="notice"><div className="notice-icon">i</div><div><strong>Persistent local history</strong><p>Reports survive application restarts. The database is stored in Harmelune's local application-data folder; up to 1,000 recent operations are retained.</p></div></div>
+            {historyItems.some((item) => item.report?.final_status === "FAILED" || item.report?.error || (item.report?.rollback_failures ?? []).length > 0 || (item.report?.errors ?? []).length > 0) && <div className="error-notice"><strong>Some recent operations need attention.</strong><p>Open each full report, preserve its verified backup path, and use Backups & recovery to verify a backup before restoring. Do not retry a failed destructive operation automatically.</p></div>}
+            {historyItems.length === 0 && !sectionLoading && <p className="review-reason">No completed operations have been recorded yet.</p>}
+            
+            {sectionLoading && <div className="table-empty">Loading history…</div>}
+            {!sectionLoading && historyItems.length === 0 && <div className="table-empty">No completed operations have been saved yet.</div>}
+            {historyStorageError && <div className="error-notice" role="alert"><strong>Local history could not be read.</strong><p>{historyStorageError}</p><small>Completed operations may still have run; check the verified backup location and application-data folder.</small></div>}
+            <div className="review-items">{historyItems.map((item) => { const report = item.report ?? {}; return <article className="review-item" key={String(item.id)}>
+              <div className="review-item-main"><span className="category-pill">{String(item.mode).toUpperCase()}</span><strong>{String(report.final_status ?? (report.restored ? "RESTORED" : report.error ? "ATTENTION" : "COMPLETED"))}</strong>
+                <span className="review-artist">{new Date(String(item.timestamp)).toLocaleString()}</span><span className="review-reason">{Number(report.succeeded ?? (report.restored ? 1 : 0))} succeeded · {Number(report.failed ?? (report.error ? 1 : 0))} failed · {Number(report.skipped ?? 0)} skipped</span></div>
+              <details><summary>Full report</summary><pre>{JSON.stringify(report, null, 2)}</pre></details></article>; })}</div>
+            <p className="review-reason">Storage: {historyScope.replaceAll("_", " ")} · newest first · {Number(historyItems.length)} record(s).</p>
+            {historyItems[0] && <p className="review-reason">Most recent operation: {new Date(String(historyItems[0].timestamp)).toLocaleString()}.</p>}
+            {error && <div className="error-notice" role="alert">{error}</div>}
+          </>}
+
+          {active === "health" && <>
+            <div className="section-title-row"><div><h2>Library health</h2><p>Read-only metrics from the latest scan.</p></div><span className="subtle-label">{hasScan ? "CURRENT SCAN" : "SCAN REQUIRED"}</span></div>
+            {!hasScan && <div className="table-empty">Scan both libraries to calculate metadata, artwork, duplicate, and review health.</div>}
+            {sectionLoading && <div className="table-empty">Calculating library health…</div>}
+            {hasScan && !sectionLoading && !healthReport && <div className="table-empty">Health data unavailable. Rescan and try again.</div>}
+            {healthReport && (["library_a", "library_b"] as const).map((key) => { const item = healthReport[key] ?? {}; return <section className="preview-result" key={key}>
+              <h3>{key === "library_a" ? "Library A" : "Library B"}</h3><div className="metrics-grid">
+                <div className="metric-card"><span>Audio tracks</span><strong>{Number(item.track_count ?? 0)}</strong></div>
+                <div className="metric-card"><span>Metadata completeness</span><strong>{Number(item.metadata_completeness_pct ?? 0).toFixed(1)}%</strong><small>{Number(item.incomplete_metadata_tracks ?? 0)} incomplete</small></div>
+                <div className="metric-card"><span>Artwork coverage</span><strong>{Number(item.artwork_coverage_pct ?? 0).toFixed(1)}%</strong><small>{Number(item.missing_artwork_tracks ?? 0)} missing</small></div>
+                <div className="metric-card"><span>Duplicate tracks</span><strong>{Number(item.duplicate_tracks ?? 0)}</strong><small>{(item.duplicate_groups ?? []).length} groups</small></div></div>
+              <div className={item.health_check_complete ? "health-card healthy" : "health-card warning"}><strong>{item.health_check_complete ? "Health check complete" : "Health check incomplete"}</strong><small>{Number(item.unreadable_files ?? 0)} scan error(s) · {Number(item.unsupported_audio_files ?? 0)} unsupported audio-like file(s)</small></div>
+              {(item.health_check_errors ?? []).length > 0 && <div className="error-notice"><ul>{item.health_check_errors.map((message: string, index: number) => <li key={index}>{message}</li>)}</ul></div>}
+              {(item.duplicate_groups ?? []).length > 0 && <details><summary>Duplicate groups</summary><ul>{item.duplicate_groups.map((group: string[], index: number) => <li key={index}>{group.join(" · ")}</li>)}</ul></details>}
+            </section>; })}
+            {healthReport?.plan && <div className="metrics-grid"><div className="metric-card"><span>Unresolved conflicts</span><strong>{Number(healthReport.plan.unresolved_conflicts ?? 0)}</strong></div><div className="metric-card"><span>Unresolved fuzzy matches</span><strong>{Number(healthReport.plan.unresolved_fuzzy_matches ?? 0)}</strong></div></div>}
+            {error && <div className="error-notice" role="alert">{error}</div>}
+          </>}
 
           {error && active === "library" && <div className="error-notice" role="alert">{error}</div>}
           <footer className="page-footer"><span><span className="status-dot" /> {scanning ? progress : executionReport ? `Last Safe execution: ${String(executionReport.final_status)}` : "Scan is read-only · no library files changed"}</span><span>Python stays the sync engine · Tauri stays the desktop shell</span></footer>
